@@ -1,0 +1,57 @@
+# --- Secrets ---------------------------------------------------------------
+# Never commit real configuration. Only the template is tracked.
+.env
+.env.*
+!.env.example
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.so
+.Python
+dist/
+build/
+*.egg-info/
+
+# --- Virtual environments --------------------------------------------------
+.venv/
+venv/
+env/
+# uv.lock IS tracked on purpose: it pins the exact dependency set the image builds from.
+
+# --- Tooling caches --------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.tox/
+.nox/
+
+# --- Coverage --------------------------------------------------------------
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# --- Graphify --------------------------------------------------------------
+# Generated knowledge graph. Fully regenerable with `graphify update .`
+# (AST-only, no API cost) and it churns on every code change.
+graphify-out/
+
+# --- Claude Code -----------------------------------------------------------
+# The whole directory is local: agent instructions and machine-local settings
+# stay out of the repository.
+.claude/
+
+# --- Editors and OS --------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Runtime ---------------------------------------------------------------
+*.log
+tmp/

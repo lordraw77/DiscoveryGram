@@ -1,0 +1,50 @@
+services:
+  discoverygram:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: discoverygram:latest
+    container_name: discoverygram
+    restart: unless-stopped
+    env_file:
+      # Not hard-required: values may also come from the shell environment.
+      # Missing configuration still fails fast with an explicit message (exit 2).
+      - path: .env
+        required: false
+    environment:
+      # Inside a container, a NoteDiscovery running on the host is reached via
+      # host.docker.internal. Override NOTEDISCOVERY_URL in .env if it lives elsewhere.
+      HEALTH_PORT: 8080
+    ports:
+      - "${HEALTH_PORT:-8080}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      redis:
+        condition: service_healthy
+        required: false
+
+  # Only needed when SESSION_BACKEND=redis. Start it with:
+  #   docker compose --profile redis up -d
+  redis:
+    image: redis:7-alpine
+    container_name: discoverygram-redis
+    restart: unless-stopped
+    profiles: ["redis"]
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:

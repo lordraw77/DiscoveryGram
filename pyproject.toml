@@ -1,0 +1,76 @@
+[project]
+name = "discoverygram"
+version = "0.1.0"
+description = "Telegram bot that makes a NoteDiscovery instance searchable, navigable and writable"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+
+dependencies = [
+    "python-telegram-bot[rate-limiter]>=22.5,<23",
+    "httpx>=0.28,<0.29",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.6,<3",
+    "structlog>=24.4",
+    "aiohttp>=3.10,<4",
+]
+
+[project.optional-dependencies]
+redis = ["redis>=5.2,<6"]
+mcp = ["mcp>=1.2"]
+
+[project.scripts]
+discoverygram = "discoverygram.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "respx>=0.22",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/discoverygram"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF", "ASYNC", "S", "A", "PTH"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106"]
+"scripts/*" = ["S105", "S106", "T201"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+disallow_any_generics = true
+files = ["src", "tests", "scripts"]
+
+[[tool.mypy.overrides]]
+module = ["telegram.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "live: tests that hit a real NoteDiscovery instance (opt-in, needs credentials)",
+]
+
+[tool.coverage.run]
+source = ["src/discoverygram"]
+branch = true
