@@ -99,17 +99,48 @@ Normalised in DiscoveryGram, mapped by each adapter:
 ```
 LlmRouter
   ├── task profile        (chat | vision | title-generation | summarise)
-  ├── routing chain       ordered provider list per task, from .env
+  ├── attempt ladder      ordered (provider, model) pairs, expanded from .env
   ├── retry policy        exponential backoff + jitter, retry-after aware
   ├── circuit breaker     per provider, opens on repeated failures
   └── provider adapters   nvidia, openrouter, groq, gemini, cloudflare,
                           cerebras, mistral, puter, ollama
 ```
 
-- Each adapter declares its **capabilities** (vision, streaming, max context, JSON mode).
-  A request is only routed to providers that satisfy the task profile.
-- **Retry** applies to transient failures (429, 5xx, timeouts, connection errors);
-  **failover** moves to the next provider on non-transient failure or exhausted retries.
+### The attempt ladder
+
+The unit of failover is a **(provider, model) pair**, not a provider. A provider chain plus each
+provider's ordered model list expands into a flat ladder, built by
+`discoverygram.llm.plan.build_attempt_ladder`:
+
+```
+LLM_CHAIN_CHAT=nvidia,ollama
+NVIDIA_MODELS=llama-3.3-70b,qwen2.5-72b
+OLLAMA_MODELS=llama3.2
+
+  1. nvidia/llama-3.3-70b   retried LLM_RETRIES_PER_MODEL times
+  2. nvidia/qwen2.5-72b     "
+  3. ollama/llama3.2        "
+```
+
+This separates two failure modes that a provider-only chain conflates:
+
+- **Model-level failure** (model unavailable, context too long, content refused) advances one rung,
+  keeping the same provider and its warm connection.
+- **Provider-level failure** (auth rejected, host unreachable, sustained 5xx) opens that provider's
+  circuit and skips *all* its remaining rungs at once, rather than burning retries on models that
+  cannot possibly answer.
+
+Ladder construction is pure logic with no I/O, so it is fully unit-tested and evaluated at startup:
+providers that are skipped — no credentials, no model listed for the task, unknown name — are
+reported with their reason instead of vanishing silently. `make check-env` prints the resulting
+ladder, which is how an operator confirms that a chain does what they think it does.
+
+### Routing rules
+
+- Each adapter declares its **capabilities** (vision, streaming, max context, JSON mode); a rung
+  whose model cannot satisfy the task profile is never attempted.
+- **Retry** covers transient failures (429, 5xx, timeouts, connection errors) and honours
+  `Retry-After`; exhausting retries advances to the next rung.
 - A provider whose circuit is open is skipped until its cool-down elapses.
 - Most providers are OpenAI-compatible and share a base adapter; `gemini`, `cloudflare` and
   `puter` need dedicated request/response mapping.

@@ -1,7 +1,8 @@
 # DiscoveryGram — development and release tasks.
 .DEFAULT_GOAL := help
-.PHONY: help install lock lint format typecheck test test-live check run verify-contract \
-        docker/build docker/run docker/stop docker/logs docker/shell clean release
+.PHONY: help install lock lint format typecheck test test-live check run check-env \
+        verify-contract docker/build docker/run docker/stop docker/logs docker/shell \
+        clean release
 
 IMAGE       ?= discoverygram
 TAG         ?= latest
@@ -39,6 +40,9 @@ check: lint typecheck test ## Everything CI runs
 
 run: ## Run the bot locally
 	$(UV) run python -m discoverygram
+
+check-env: ## Validate .env and print a redacted summary (no network)
+	$(UV) run python scripts/check_env.py
 
 verify-contract: ## Probe the live instance for the two unresolved behaviours
 	$(UV) run python scripts/verify_contract.py

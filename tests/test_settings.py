@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from discoverygram.config import SessionBackend, Settings, TelegramMode, Transport
+from discoverygram.llm import TaskProfile
 
 
 def test_loads_from_environment(env: None) -> None:
@@ -97,3 +98,27 @@ def test_max_upload_bytes(env: None) -> None:
     settings = Settings()  # type: ignore[call-arg]
 
     assert settings.max_upload_bytes == 20 * 1024 * 1024
+
+
+def test_attempt_ladder_from_environment(env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Settings expands the configured chain into (provider, model) attempts."""
+    monkeypatch.setenv("LLM_CHAIN_CHAT", "nvidia,ollama")
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-x")
+    monkeypatch.setenv("NVIDIA_MODELS", "model-a,model-b")
+    monkeypatch.setenv("OLLAMA_MODELS", "local-a")
+    settings = Settings()  # type: ignore[call-arg]
+
+    ladder, skipped = settings.attempt_ladder(TaskProfile.CHAT)
+
+    assert [str(attempt) for attempt in ladder] == [
+        "nvidia/model-a",
+        "nvidia/model-b",
+        "ollama/local-a",
+    ]
+    assert skipped == []
+
+
+def test_retries_per_model_default(env: None) -> None:
+    settings = Settings()  # type: ignore[call-arg]
+
+    assert settings.llm_retries_per_model == 3

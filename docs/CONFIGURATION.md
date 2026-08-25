@@ -45,11 +45,26 @@ the MCP subprocess. See [notediscovery-contract.md](notediscovery-contract.md).
 
 ## LLM router
 
+Failover works on **(provider, model) pairs**, not on providers alone. A request retries the same
+pair `LLM_RETRIES_PER_MODEL` times, then moves to the next model of the same provider, and only
+when that provider's models are exhausted does the next provider take over.
+
+```
+LLM_CHAIN_CHAT=groq,ollama
+GROQ_MODELS=fast-model,bigger-model
+OLLAMA_MODELS=local-model
+
+  groq/fast-model  (x3) -> groq/bigger-model (x3) -> ollama/local-model (x3) -> give up
+```
+
+`make check-env` prints the exact ladder a configuration produces, including the reason for every
+provider that was skipped.
+
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_CHAIN_CHAT` | — | Ordered failover chain, e.g. `groq,cerebras,openrouter,ollama` |
-| `LLM_CHAIN_VISION` | — | Ordered chain for image tasks, e.g. `gemini,openrouter,ollama` |
-| `LLM_MAX_RETRIES` | `3` | Retry attempts per provider before failover |
+| `LLM_CHAIN_CHAT` | — | Ordered provider chain for text tasks, e.g. `groq,cerebras,ollama` |
+| `LLM_CHAIN_VISION` | — | Ordered provider chain for image tasks, e.g. `gemini,openrouter,ollama` |
+| `LLM_RETRIES_PER_MODEL` | `3` | Retries against the **same** (provider, model) pair before advancing to the next model |
 | `LLM_BACKOFF_BASE_S` | `1.0` | Exponential backoff base (jitter applied) |
 | `LLM_REQUEST_TIMEOUT_S` | `60` | Per-request timeout |
 | `LLM_CIRCUIT_FAILURE_THRESHOLD` | `5` | Failures before a provider's circuit opens |
@@ -61,11 +76,13 @@ Per provider — replace `<P>` with `NVIDIA`, `OPENROUTER`, `GROQ`, `GEMINI`, `C
 
 | Variable | Description |
 |---|---|
-| `<P>_API_KEY` | Credential; a provider without one is skipped and logged at startup |
+| `<P>_API_KEY` | Credential. A provider without one is skipped and the reason logged — `ollama` is exempt |
 | `<P>_BASE_URL` | Override for self-hosted or regional endpoints |
-| `<P>_MODEL` | Default chat model |
-| `<P>_VISION_MODEL` | Model used for vision tasks, when supported |
-| `<P>_ENABLED` | Explicit on/off switch, defaults to on when a key is present |
+| `<P>_MODELS` | **Ordered, comma-separated** list of chat models, tried left to right |
+| `<P>_VISION_MODELS` | **Ordered, comma-separated** list of vision-capable models |
+
+A provider listed in a chain but with no model for that task is skipped, not silently retried with
+a default: leaving `<P>_VISION_MODELS` empty removes it from the vision ladder only.
 
 `CLOUDFLARE_ACCOUNT_ID` is additionally required for Cloudflare Workers AI.
 `OLLAMA_BASE_URL` defaults to `http://localhost:11434` and needs no key.

@@ -6,11 +6,22 @@ Invalid or missing required values fail fast at startup with an explicit message
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum
+from pathlib import Path
 from typing import Annotated, Literal
 
+from dotenv import dotenv_values
 from pydantic import Field, HttpUrl, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from discoverygram.llm.plan import (
+    Attempt,
+    ProviderConfig,
+    TaskProfile,
+    build_attempt_ladder,
+    load_provider_configs,
+)
 
 
 class Transport(StrEnum):
@@ -91,7 +102,9 @@ class Settings(BaseSettings):
     # --- LLM router -------------------------------------------------------
     llm_chain_chat: CsvStrs
     llm_chain_vision: CsvStrs
-    llm_max_retries: int = Field(default=3, ge=0)
+    # Retries against the *same* (provider, model) pair before moving to the
+    # next model. See discoverygram.llm.plan for the ladder semantics.
+    llm_retries_per_model: int = Field(default=3, ge=0)
     llm_backoff_base_s: float = Field(default=1.0, gt=0)
     llm_request_timeout_s: float = Field(default=60.0, gt=0)
     llm_circuit_failure_threshold: int = Field(default=5, gt=0)
@@ -161,6 +174,29 @@ class Settings(BaseSettings):
         return self
 
     # --- Derived helpers --------------------------------------------------
+
+    def provider_configs(self) -> dict[str, ProviderConfig]:
+        """Read the per-provider `<P>_MODELS` / `<P>_API_KEY` variables.
+
+        These are dynamic (nine providers x four variables), so they are read
+        from the raw environment rather than declared as fields. The `.env`
+        file is merged in explicitly because pydantic-settings loads it into
+        the model without exporting it to `os.environ`; real environment
+        variables win, matching pydantic-settings' own precedence.
+        """
+        merged: dict[str, str] = {}
+        env_file = self.model_config.get("env_file")
+        if env_file and Path(str(env_file)).is_file():
+            merged.update(
+                {key: value for key, value in dotenv_values(str(env_file)).items() if value}
+            )
+        merged.update(os.environ)
+        return load_provider_configs(merged)
+
+    def attempt_ladder(self, task: TaskProfile) -> tuple[list[Attempt], list[str]]:
+        """Ordered (provider, model) attempts for a task, plus skip reasons."""
+        chain = self.llm_chain_vision if task is TaskProfile.VISION else self.llm_chain_chat
+        return build_attempt_ladder(chain, self.provider_configs(), task)
 
     @property
     def notediscovery_headers(self) -> dict[str, str]:

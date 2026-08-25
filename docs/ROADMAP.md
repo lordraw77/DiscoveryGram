@@ -158,18 +158,23 @@ round-trip correctly against the live instance.
 
 **Work**
 1. `LlmClient` port; task profiles (`chat`, `vision`, `title`, `summarise`) with capability
-   requirements.
+   requirements. The **attempt ladder** — ordered (provider, model) pairs expanded from the
+   chains and each provider's model list — is already built and unit-tested in
+   `llm/plan.py` (delivered early in phase 0, since operators configure it in `.env`).
 2. OpenAI-compatible base adapter covering **nvidia, openrouter, groq, cerebras, mistral, ollama**.
 3. Dedicated adapters for **gemini**, **cloudflare** (Workers AI, needs account id) and **puter**.
-4. Routing chain from `.env` per task profile; providers lacking a required capability are skipped.
-5. Retry with exponential backoff + jitter, honouring `Retry-After`; failover to the next provider
-   on exhaustion or non-transient error.
-6. Per-provider circuit breaker with cool-down and half-open probing.
+4. Execute the ladder: providers lacking a required capability are skipped at build time.
+5. Retry with exponential backoff + jitter, honouring `Retry-After`; on exhaustion advance one
+   rung — the next model of the same provider, then the next provider.
+6. Per-provider circuit breaker with cool-down and half-open probing. A provider-level failure
+   (auth, unreachable, sustained 5xx) skips **all** that provider's remaining rungs at once,
+   rather than burning retries on models that cannot answer.
 7. Usage accounting: provider, model, latency, tokens, outcome — logged and surfaced in `/status`.
 8. Per-user daily call cap as a cost guard.
 
-**Definition of Done** — with the first two providers in a chain forced to fail, a request still
-succeeds through the third; `/status` reports circuit states accurately; a fault-injection test
+**Definition of Done** — with the first two rungs of the ladder forced to fail, a request still
+succeeds through the third, whether that rung is another model of the same provider or a
+different provider; `/status` reports circuit states accurately; a fault-injection test
 suite covers 429, 5xx, timeout and malformed-response paths for every adapter.
 
 ---
