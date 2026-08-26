@@ -4,7 +4,7 @@
         verify-contract docker/build docker/run docker/stop docker/logs docker/shell \
         clean release
 
-IMAGE       ?= discoverygram
+IMAGE       ?= lordraw/discoverygram
 TAG         ?= latest
 UV          ?= uv
 COMPOSE     ?= docker compose

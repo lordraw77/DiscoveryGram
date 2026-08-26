@@ -1,7 +1,8 @@
 """Entry point.
 
-Phase 0 wires configuration, logging and the health server, and verifies that
-NoteDiscovery is reachable. The Telegram application itself arrives in phase 2.
+Configuration, logging, the health server and the NoteDiscovery adapter are
+wired here, and the instance is probed once at startup. The Telegram application
+itself arrives in phase 2.
 """
 
 from __future__ import annotations
@@ -12,12 +13,14 @@ import signal
 import sys
 from typing import NoReturn
 
-import httpx
 from pydantic import ValidationError
 
 from discoverygram import __version__
+from discoverygram.adapters import build_note_store
+from discoverygram.app import probe_instance
 from discoverygram.config import Settings
 from discoverygram.health import HealthServer
+from discoverygram.ports import NoteStore
 from discoverygram.util.logging import configure_logging, get_logger
 
 log = get_logger(__name__)
@@ -35,21 +38,6 @@ def load_settings() -> Settings:
         raise SystemExit(2) from exc
 
 
-async def _check_notediscovery(settings: Settings) -> bool:
-    """Readiness check: NoteDiscovery answers on /health."""
-    url = str(settings.notediscovery_url).rstrip("/")
-    try:
-        async with httpx.AsyncClient(
-            timeout=settings.notediscovery_timeout,
-            verify=settings.notediscovery_verify_tls,
-        ) as client:
-            response = await client.get(f"{url}/health", headers=settings.notediscovery_headers)
-            return response.status_code == 200
-    except httpx.HTTPError as exc:
-        log.warning("notediscovery_unreachable", url=url, error=str(exc))
-        return False
-
-
 async def run() -> None:
     settings = load_settings()
     configure_logging(level=settings.log_level, log_format=settings.log_format)
@@ -63,16 +51,17 @@ async def run() -> None:
         allowed_users=len(settings.telegram_allowed_user_ids),
     )
 
+    store: NoteStore = build_note_store(settings)
+
     health = HealthServer(port=settings.health_port, version=__version__)
-    health.register_check("notediscovery", lambda: _check_notediscovery(settings))
+    health.register_check("notediscovery", store.health)
     await health.start()
 
-    if await _check_notediscovery(settings):
-        log.info("notediscovery_reachable", url=str(settings.notediscovery_url))
-    else:
-        # Not fatal: the health endpoint reports the degradation honestly and
-        # the instance may come back without a restart.
-        log.warning("notediscovery_not_reachable_at_startup")
+    # Not fatal when it fails: the health endpoint reports the degradation
+    # honestly and the instance may come back without a restart.
+    state = await probe_instance(store)
+    if not state.healthy:
+        log.warning("notediscovery_not_reachable_at_startup", url=str(settings.notediscovery_url))
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -84,6 +73,7 @@ async def run() -> None:
 
     log.info("shutting_down")
     await health.stop()
+    await store.aclose()
 
 
 def main() -> NoReturn:

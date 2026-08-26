@@ -89,6 +89,11 @@ class Settings(BaseSettings):
 
     # `GET /api/search` has no server-side default cap, so we always send one.
     search_default_limit: int = Field(default=50, gt=0)
+    # NoteDiscovery refuses to act on queries shorter than this. It is a server
+    # constant (`SEARCH_MIN_QUERY_LENGTH`, 2 in 0.31.3) and is *not* exposed by
+    # `/api/config`, so the bot carries its own copy and rejects short queries
+    # locally instead of round-tripping for an empty result.
+    search_min_query_length: int = Field(default=2, ge=1)
     tree_cache_ttl_s: int = Field(default=300, ge=0)
     inbox_path: str = "Inbox"
     auto_create_parents: bool = True

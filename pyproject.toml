@@ -49,6 +49,10 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF", "ASYNC", "S", 
 ignore = ["S101"]
 
 [tool.ruff.lint.per-file-ignores]
+# The port's error names are the vocabulary the whole application speaks
+# (`NotFound`, `Unsupported`, ...); an `Error` suffix on each would only add noise.
+"src/discoverygram/ports/errors.py" = ["N818"]
+"src/discoverygram/util/paths.py" = ["N818"]
 "tests/*" = ["S105", "S106"]
 "scripts/*" = ["S105", "S106", "T201"]
 

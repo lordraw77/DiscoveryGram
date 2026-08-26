@@ -10,6 +10,7 @@ read and create notes — including LLM-assisted creation from images and unstru
 | [FEATURES.md](FEATURES.md) | Functional catalogue: commands, flows, UX behaviour |
 | [CONFIGURATION.md](CONFIGURATION.md) | Full `.env` reference |
 | [notediscovery-contract.md](notediscovery-contract.md) | Verified REST + MCP contract of NoteDiscovery 0.31.3 |
+| [dockerhub-overview.md](dockerhub-overview.md) | Text published as the Docker Hub repository overview |
 
 ## Project constraints (non-negotiable)
 
@@ -21,10 +22,15 @@ read and create notes — including LLM-assisted creation from images and unstru
 
 ## Current status
 
-**Phase 0 complete.** The contract is documented against NoteDiscovery 0.31.3
-([notediscovery-contract.md](notediscovery-contract.md)), and the foundations are built and
-verified: configuration, logging, health endpoints, container, CI, and a live contract probe.
-`make check` is green at 91% coverage. Phase 1 (the NoteDiscovery integration layer) is next.
+**Phases 0 and 1 complete.** The contract is documented against NoteDiscovery 0.31.3
+([notediscovery-contract.md](notediscovery-contract.md)) and re-verified in phase 1 against the
+image's handler source, which settled both open behaviours and corrected four assumptions.
+
+On top of the phase 0 foundations, the NoteDiscovery integration layer is built and tested: the
+`NoteStore` port and domain model, `RestNoteStore`, the flag-gated `McpNoteStore`, the client-side
+compensation layer (derived folder tree, literal search, ranking, read-modify-write editing,
+rate-limit pacing) and the startup probe. `make check` is green at 92% coverage, with an opt-in
+live suite (`make test-live`) waiting on credentials. Phase 2 (the Telegram bot core) is next.
 
 ## Decisions already taken
 

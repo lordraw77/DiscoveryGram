@@ -30,7 +30,8 @@ the MCP subprocess. See [notediscovery-contract.md](notediscovery-contract.md).
 | `NOTEDISCOVERY_VERIFY_TLS` | `true` | Set false only for internal self-signed instances |
 | `NOTEDISCOVERY_TRANSPORT` | `rest` | `rest` or `mcp`. MCP is a strict subset — REST is the default for a reason |
 | `SEARCH_DEFAULT_LIMIT` | `50` | Always sent to `/api/search`, which has **no server-side default cap** |
-| `TREE_CACHE_TTL_S` | `300` | Lifetime of the client-side folder tree derived from `/api/notes` |
+| `SEARCH_MIN_QUERY_LENGTH` | `2` | Shortest query NoteDiscovery acts on. A hard-coded server constant that no endpoint exposes, so the bot carries its own copy and refuses shorter queries locally. Raise it only to match a patched instance |
+| `TREE_CACHE_TTL_S` | `300` | Lifetime of the client-side folder tree derived from `/api/notes`. Every write invalidates it regardless, so a low value is rarely needed; `0` disables caching |
 | `INBOX_PATH` | `Inbox` | Target of `/quick` |
 | `AUTO_CREATE_PARENTS` | `true` | Call `POST /api/folders` for missing parents when writing a note |
 

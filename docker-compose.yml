@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: discoverygram:latest
+    image: lordraw/discoverygram:latest
     container_name: discoverygram
     restart: unless-stopped
     env_file:

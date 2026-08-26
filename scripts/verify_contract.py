@@ -6,8 +6,11 @@ confirmed against a live instance:
   1. Does `POST /api/notes/{path}` overwrite an existing note, or reject it?
      The edit flow is a read-modify-write over POST, so a rejection would force
      a delete-then-create fallback.
-  2. Is search enabled, and what is its minimum query length?
-     Both are read from `GET /api/config`; search can be disabled server-side.
+  2. Is search enabled? `GET /api/config` reports it as the flat, camelCase key
+     `searchEnabled`. The minimum query length is *not* reported by any endpoint
+     (it is a hard-coded server constant, 2 in 0.31.3), so this script measures
+     it instead: it searches for a marker it just wrote, at growing prefix
+     lengths, and reports the shortest one that returns a hit.
 
 Run:  uv run python scripts/verify_contract.py
 It reads NOTEDISCOVERY_URL and NOTEDISCOVERY_API_KEY from the environment/.env.
@@ -20,11 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import uuid
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
+from discoverygram.app.probe import KNOWN_GOOD_VERSION
 from discoverygram.config import Settings
 
 SCRATCH_PATH = "DiscoveryGram/_contract_probe.md"
@@ -49,13 +54,45 @@ async def _probe_config(client: httpx.AsyncClient) -> None:
         return
 
     config: dict[str, Any] = response.json()
-    search = config.get("search", {})
-    print(f"    search.enabled              = {search.get('enabled')}")
-    print(f"    search.min_query_length     = {search.get('min_query_length', '(absent)')}")
-    print(f"    full search block           = {search}")
+    enabled = config.get("searchEnabled")
+    print(f"    name / version              = {config.get('name')} {config.get('version')}")
+    print(f"    searchEnabled               = {enabled}")
+    print(f"    authentication.enabled      = {config.get('authentication', {}).get('enabled')}")
 
-    if search.get("enabled") is False:
+    if enabled is False:
         print("    => /search must be disabled in the bot with an explicit message")
+    if config.get("version") != KNOWN_GOOD_VERSION:
+        print(f"    => version differs from the documented contract ({KNOWN_GOOD_VERSION});")
+        print("       re-verify docs/notediscovery-contract.md against this instance")
+
+
+async def _probe_min_query_length(client: httpx.AsyncClient) -> None:
+    """Measure the floor, since no endpoint reports it."""
+    print("\n[3] Minimum query length — measured, not reported")
+    encoded = _encode(SCRATCH_PATH)
+    marker = "zq" + uuid.uuid4().hex[:8]
+
+    create = await client.post(f"/api/notes/{encoded}", json={"content": f"marker {marker}"})
+    if create.status_code >= 400:
+        print(f"    cannot write the probe note: HTTP {create.status_code}")
+        return
+
+    try:
+        for length in range(1, len(marker) + 1):
+            response = await client.get("/api/search", params={"q": marker[:length], "limit": 50})
+            if response.status_code == 403:
+                print("    search is disabled (HTTP 403); nothing to measure")
+                return
+            if response.status_code != 200:
+                print(f"    HTTP {response.status_code} at length {length}; stopping")
+                return
+            if response.json().get("results"):
+                print(f"    shortest query that returns a hit = {length}")
+                print(f"    => set SEARCH_MIN_QUERY_LENGTH={length}")
+                return
+        print("    no prefix matched; the marker may not be indexed yet")
+    finally:
+        await client.delete(f"/api/notes/{encoded}")
 
 
 async def _probe_overwrite(client: httpx.AsyncClient) -> None:
@@ -112,6 +149,7 @@ async def main() -> int:
 
         await _probe_overwrite(client)
         await _probe_config(client)
+        await _probe_min_query_length(client)
 
     print("\nRecord the results in docs/notediscovery-contract.md section 4.")
     return 0

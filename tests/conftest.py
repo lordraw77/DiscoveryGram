@@ -6,6 +6,9 @@ from collections.abc import Iterator
 
 import pytest
 
+from discoverygram.adapters.rest import RestNoteStore
+from discoverygram.config import Settings
+
 # The minimum environment a valid Settings object needs.
 BASE_ENV = {
     "TELEGRAM_BOT_TOKEN": "123:test-token",
@@ -28,6 +31,11 @@ def env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "MCP_ENABLED",
         "LLM_CHAIN_CHAT",
         "TELEGRAM_ALLOWED_CHAT_IDS",
+        "SEARCH_MIN_QUERY_LENGTH",
+        "SEARCH_DEFAULT_LIMIT",
+        "TREE_CACHE_TTL_S",
+        "NOTEDISCOVERY_MAX_RETRIES",
+        "MAX_UPLOAD_MB",
     ]:
         monkeypatch.delenv(key, raising=False)
     for key, value in BASE_ENV.items():
@@ -39,3 +47,17 @@ def env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         raising=False,
     )
     yield
+
+
+@pytest.fixture
+def settings(env: None) -> Settings:
+    """A Settings object built from the isolated test environment."""
+    return Settings()  # type: ignore[call-arg]
+
+
+@pytest.fixture
+def store(settings: Settings) -> Iterator[RestNoteStore]:
+    """A REST adapter with retries off, so failure tests do not sleep."""
+    settings = settings.model_copy(update={"notediscovery_max_retries": 0})
+    adapter = RestNoteStore(settings)
+    yield adapter

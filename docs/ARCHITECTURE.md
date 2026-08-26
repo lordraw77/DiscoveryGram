@@ -75,24 +75,67 @@ who want MCP opt in via A or B, both supported through `MCP_LAUNCH_MODE`.
 
 ### Client-side compensation
 
-The port surface is wider than the API, so the REST adapter compensates:
+The port surface is wider than the API. The gap is closed in `adapters/`, shared by both
+transports rather than duplicated in each:
 
-- **Folder tree** — no tree endpoint exists; derived from `GET /api/notes` paths, cached and
-  invalidated on write.
-- **Exact search** — no literal mode exists; `/find` filters `/api/search` results client-side.
-- **Ranking** — no scores are returned; hits are ordered client-side (title match before body
-  match, then term frequency).
-- **Edit** — `PATCH` only appends; a full edit is read-modify-write over `POST`.
-- **Limits** — `GET /api/search` has no default cap, so an explicit `limit` is always sent.
+| Gap | Where | How |
+|---|---|---|
+| No tree endpoint | `adapters/tree.py` | Built from `GET /api/notes`, which returns the vault's **folder list** as well as its notes — so empty folders survive. Cached with `TREE_CACHE_TTL_S`, invalidated on every write, and guarded by a lock so ten concurrent `/browse` taps cause one vault scan |
+| No literal search mode | `adapters/rest.py` + `ranking.py` | `/find` filters `/search` results case-sensitively. Snippets carry only ±15 characters of context, so near-misses are confirmed against the note body — bounded to 25 fetches |
+| No relevance score | `adapters/ranking.py` | Ordered by title hit, then exact/prefix title, then term frequency, then how early the first match sits, with recency as a tie-breaker. Ties break on path, so pagination stays stable across page turns |
+| HTML in snippets | `adapters/ranking.py` | `<mark class="search-highlight">` is stripped and the matched term kept separately, ready to be re-highlighted in Telegram's own syntax |
+| `PATCH` appends only | `RestNoteStore.update_note` | Read-modify-write over `POST`, which is an upsert. The read is what makes editing a deleted note fail as `NotFound` instead of re-creating it |
+| No `limit` default on `/api/search` | `RestNoteStore.search` | An explicit `limit` on every call, defaulting to `SEARCH_DEFAULT_LIMIT` |
+| Minimum query length is undiscoverable | `RestNoteStore.search` | `SEARCH_MIN_QUERY_LENGTH` (2) enforced locally: a short query never leaves the process |
+| Per-endpoint rate limits | `adapters/throttle.py` | A sliding-window limiter per endpoint bucket, set 10% under each server limit because the two windows are unaligned. A 429 that still gets through becomes `RateLimited` with its `Retry-After` |
+| No `recent` endpoint over REST | `RestNoteStore.recent_notes` | Derived from the listing's `modified` timestamps. MCP has a real `get_recent_notes` tool and uses it |
+
+### Failure handling
+
+Adapters translate every transport failure into the port's own error type — `NotFound`,
+`Unauthorized`, `Forbidden`, `Conflict`, `InvalidRequest`, `RateLimited`, `Unavailable`,
+`Unsupported` — so no `httpx` or `mcp` exception ever reaches the application layer.
+
+Timeouts, connection errors and 5xx are retried up to `NOTEDISCOVERY_MAX_RETRIES` with exponential
+backoff and full jitter. 4xx is never retried: a rejected request will not improve, and retrying it
+only spends rate limit. `health()` is the deliberate exception — it backs `/readyz`, which the
+orchestrator polls, so it never retries and never raises.
+
+### Startup probe
+
+`app/probe.py` asks the instance who it is once at boot: reachable or not, `searchEnabled` or not,
+and which version. A `search.enabled: false` instance answers **403** from every `/api/search`
+call, so the search commands are disabled up front with a clear message rather than failing once
+per user request. A version other than the contract's 0.31.3 is logged as a warning — the contract
+doc is version-stamped, and drift should be visible before it is mysterious. The probe never
+raises: an unreachable instance degrades the bot, `/readyz` reports the truth, and the instance may
+come back without a restart.
 
 ## 4. Domain model
 
-Normalised in DiscoveryGram, mapped by each adapter:
+NoteDiscovery's JSON is inconsistent across endpoints — `name` is sometimes a stem and sometimes a
+filename, config keys are camelCase while note keys are snake_case, tags arrive as a `{tag: count}`
+map, snippets arrive as HTML. `ports/model.py` normalises all of it once, and every adapter maps
+into it (`adapters/parsing.py`), so the application layer sees one shape.
 
-- `Note` — id, path, title, body, tags, timestamps, parent, attachment refs.
-- `NoteRef` — lightweight id + path + title, used in listings to avoid fetching bodies.
-- `SearchHit` — `NoteRef` + score + highlighted snippet.
-- `TreeNode` — path segment, child count, whether it holds a note.
+- `NoteRef` — path, title, folder, `modified`, size, tags. Listings use it to avoid fetching bodies.
+- `Note` — a `NoteRef` plus body, `created`, line count and backlinks.
+- `SearchHit` — a `NoteRef` plus cleaned `SearchMatch` snippets, a **client-side** `score` and
+  `title_match`. The score orders results; it is never shown as a percentage, because NoteDiscovery
+  returns no relevance signal at all.
+- `TreeNode` — a folder with its child folders and notes, from the client-derived tree.
+- `Backlink`, `Graph`, `TemplateRef`/`Template`, `MediaUpload`, `ShareLink`, `VaultStats`,
+  `InstanceConfig` — the remaining payloads, one dataclass each.
+
+Everything is a frozen dataclass: these objects are cached, shared across concurrent handlers and
+paginated over, and none of that is safe if a renderer can mutate them.
+
+### Paths
+
+Note paths arrive from Telegram users, from LLM output and from wiki-links, so they are untrusted.
+`util/paths.py` is the single gate: it rejects traversal (`..`), control characters and the
+characters NoteDiscovery itself refuses, normalises separators, and appends `.md` when a user types
+`Projects/Ideas`. Nothing reaches an adapter without passing through it.
 
 ## 5. LLM router (proprietary)
 

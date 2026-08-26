@@ -57,34 +57,70 @@ probes both and is ready to run the moment credentials exist.
 
 ---
 
-## Phase 1 — NoteDiscovery integration layer
+## Phase 1 — NoteDiscovery integration layer — **COMPLETE**
 
 Simplified by the phase 0 findings: no runtime capability map, no per-operation transport
 resolution. REST is primary; MCP is an optional, flag-gated subset adapter.
 
-**Work**
-1. Define the `NoteStore` port and the normalised domain model (`Note`, `NoteRef`, `SearchHit`,
-   `TreeNode`).
-2. `RestNoteStore` on `httpx.AsyncClient` covering notes, folders, search, tags, templates, media,
-   graph/backlinks, stats: connection pooling, timeouts, retry on 5xx/timeout, typed errors
-   (`NotFound`, `Unauthorized`, `Forbidden`, `RateLimited`, `Unavailable`, `Unsupported`).
-   Optional API key sent as `X-API-Key`; unauthenticated instances must work.
-3. **Client-side compensation layer** — the part with real logic:
-   - folder tree derived from `GET /api/notes` paths, cached with TTL, invalidated on write;
-   - literal filtering for exact search;
-   - client-side ranking (title hit before body hit, then term frequency);
-   - read-modify-write edit over `POST`, since `PATCH` only appends;
-   - explicit `limit` on every search call;
-   - throttle for the 60/minute `PATCH` limit, with 429 surfaced as a friendly retry.
-4. `McpNoteStore` over an **stdio subprocess**: launch, MCP handshake, tool call mapping,
-   supervision and restart, `Unsupported` for anything outside the 18 tools. Defaults to disabled.
-5. Startup probe of `GET /api/config` and `/health`: record whether search is enabled, its minimum
-   query length, and the instance version; disable affected commands cleanly if search is off.
-6. Contract tests against recorded fixtures, plus an opt-in live suite (`pytest -m live`).
+**Contract re-verification.** The handler bodies of NoteDiscovery 0.31.3 were read directly from
+the image rather than inferred from its route table. That settled both open behaviours and
+corrected four phase 0 assumptions, all folded back into
+[notediscovery-contract.md](notediscovery-contract.md):
 
-**Definition of Done** — every `NoteStore` method works end-to-end against the live instance over
-REST; the MCP adapter passes the same suite for its 18 supported operations and reports
-`Unsupported` for the rest; a search-disabled instance degrades without errors.
+- **`POST /api/notes/{path}` overwrites.** It is the editor's autosave endpoint
+  (`create_or_update_note`), rate-limited 300/minute, not 60. The delete-then-create fallback in
+  the risk register is not needed.
+- **`/api/config` is flat and camelCase** — `searchEnabled`, not `search.enabled` — and it does
+  **not** expose the minimum query length. That is a hard-coded server constant of **2**, so the
+  bot carries its own `SEARCH_MIN_QUERY_LENGTH` and refuses short queries locally.
+- **Search does return snippets**: up to three matched lines per note, HTML-escaped and wrapped in
+  `<mark class="search-highlight">`. The markup has to be stripped or it collides with Telegram's
+  formatting.
+- **`GET /api/notes` returns the folder list** alongside the notes, and `GET /api/notes/{path}`
+  already includes backlinks. The derived tree keeps empty folders it would otherwise lose, and
+  `/backlinks` costs no extra call over REST.
+
+**Delivered**
+
+| Item | Where |
+|---|---|
+| `NoteStore` port — 30 operations, grouped by capability | `ports/note_store.py` |
+| Normalised domain model, frozen dataclasses | `ports/model.py` |
+| Typed errors: `NotFound` `Unauthorized` `Forbidden` `Conflict` `InvalidRequest` `RateLimited` `Unavailable` `Unsupported` | `ports/errors.py` |
+| Untrusted-path gate: traversal, control characters, forbidden characters, `.md` inference | `util/paths.py` |
+| `RestNoteStore` — notes, folders, search, tags, templates, media, graph/backlinks, export, sharing, stats | `adapters/rest.py` |
+| Pooled `httpx.AsyncClient`, retry on timeout/5xx with jitter, optional `X-API-Key`, correlation id propagation | `adapters/rest.py` |
+| JSON → model normalisation shared by both transports | `adapters/parsing.py` |
+| Client-derived folder tree, TTL cache, write invalidation, single-flight lock, breadcrumbs | `adapters/tree.py` |
+| Client-side ranking, snippet cleaning, literal filtering | `adapters/ranking.py` |
+| Sliding-window throttle for all 16 rate-limited endpoints | `adapters/throttle.py` |
+| `McpNoteStore` over stdio: launch, handshake, tool mapping, restart-on-failure, `Unsupported` for the rest | `adapters/mcp.py` |
+| Transport factory, the single place an implementation is chosen | `adapters/__init__.py` |
+| Startup probe: reachability, `searchEnabled`, version-drift warning | `app/probe.py` |
+| Recorded 0.31.3 payloads + contract tests | `tests/fixtures/`, `tests/test_parsing.py` |
+| Opt-in live suite (`make test-live`), writing only under `_DiscoveryGram_live/` | `tests/test_live.py` |
+
+**Verified, not assumed**
+
+- `make check` green: ruff clean, mypy strict clean on 46 files, **189 tests passing at 92%
+  coverage**, plus 13 live tests held back behind `-m live` — `rest.py` 93%, `mcp.py` 84%,
+  `tree.py` 99%, `throttle.py`, `probe.py` and `note_store.py` 100%.
+- Error mapping is asserted per status code, and a 4xx is proven **not** retried — retrying a
+  rejected request only spends rate limit.
+- `health()` is proven not to walk the retry ladder: it backs `/readyz`, which is polled.
+- The edit flow is proven to be read-modify-write, and proven to refuse to resurrect a note that
+  was deleted between read and write.
+- Every search call is proven to carry an explicit `limit`, and a below-minimum query is proven
+  never to leave the process.
+- The tree is proven to survive concurrent callers with one load, to keep empty folders, and to be
+  dropped by every write.
+- All eight REST-only operations are proven to raise `Unsupported` over MCP, naming REST in the
+  message.
+
+**Carried into phase 2** — the live suite (`make test-live`) and `make verify-contract` are written
+and ready; both need `NOTEDISCOVERY_URL` and, if the instance is authenticated, its API key. Until
+then the contract is verified against source and recorded fixtures rather than against a running
+vault.
 
 ---
 
@@ -261,10 +297,11 @@ early cut-line if scope needs trimming.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| `POST /api/notes/{path}` may reject instead of overwrite | Edit flow breaks | Confirmed live in phase 0; fallback is delete-then-create wrapped in a single guarded operation |
+| ~~`POST /api/notes/{path}` may reject instead of overwrite~~ | — | **Closed in phase 1.** Confirmed in source: it is an upsert (the editor's autosave endpoint). No fallback needed |
 | MCP subprocess needs the Docker socket | Root-equivalent host access | MCP defaults to disabled; REST loses no functionality. Vendoring the module is the socket-free alternative |
 | NoteDiscovery upgrade changes the contract | Silent breakage | Contract doc is version-stamped (0.31.3); startup logs the instance version and warns on mismatch; contract tests run against fixtures |
-| Search disabled or min-length floored server-side | `/search` silently useless | Probed at startup via `/api/config`; commands disabled with an explicit message |
+| Search disabled server-side | `/search` silently useless | Probed at startup via `/api/config` (`searchEnabled`); commands disabled with an explicit message |
+| Minimum query length is not exposed by the API | Short queries look broken | Carried as `SEARCH_MIN_QUERY_LENGTH` (2) and enforced client-side |
 | Unbounded `/api/search` with no default limit | Whole-vault response | Explicit `limit` on every call, enforced in the adapter |
 | Telegram formatting and size limits | Broken rendering on real notes | Centralised renderer with escaping and chunking, tested against pathological note bodies |
 | `callback_data` 64-byte limit | Navigation cannot carry state | Opaque token + server-side session store, designed in phase 2 |
@@ -273,12 +310,12 @@ early cut-line if scope needs trimming.
 
 ## Open items
 
-Phase 0's contract discovery is complete. What is still needed:
+Phases 0 and 1 are complete and need no live instance to have been correct. What is still needed:
 
 1. `NOTEDISCOVERY_URL` (with port) and the API key of the live instance — if the instance runs
    unauthenticated, say so, the adapter supports both.
 2. BotFather token and the list of Telegram user ids to allow-list.
 3. Which LLM providers already have credentials, so the phase 5 chains start from real keys.
-4. Confirmation of the two live behaviours listed in phase 0 (`POST` overwrite semantics,
-   `search.enabled` and its minimum query length) — these can be checked as the first task of
-   phase 0 once credentials are available.
+4. A run of `make test-live` and `make verify-contract` against the real vault. Both behaviours
+   they probe are now confirmed from source; the run is what turns "confirmed in code" into
+   "confirmed in production".

@@ -4,9 +4,10 @@ Make a [NoteDiscovery](https://github.com/gamosoft/NoteDiscovery) vault fully us
 **Telegram**: search it, navigate it, read it, and create notes in it — including LLM-assisted
 creation from images.
 
-> **Status: phase 0.** The foundations are in place (configuration, logging, health, container,
-> CI) and NoteDiscovery's contract has been verified against version 0.31.3. The Telegram bot
-> itself lands in phase 2. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status: phase 1 complete.** The foundations (configuration, logging, health, container, CI)
+> and the whole NoteDiscovery integration layer are in place: a `NoteStore` port with REST and
+> MCP adapters, the client-side compensation for everything the API does not offer, and a startup
+> probe. The Telegram bot itself lands in phase 2. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Quick start
 
@@ -28,6 +29,8 @@ Required values in `.env`:
 `NOTEDISCOVERY_API_KEY` is optional: NoteDiscovery may run unauthenticated.
 
 ## Docker
+
+Published as [`lordraw/discoverygram`](https://hub.docker.com/r/lordraw/discoverygram).
 
 ```bash
 make docker/build
