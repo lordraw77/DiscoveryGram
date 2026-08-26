@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from discoverygram.llm.plan import (
+    TASK_DEFAULTS,
     ProviderConfig,
     TaskProfile,
     build_attempt_ladder,
@@ -128,3 +129,77 @@ def test_load_provider_configs_covers_every_known_provider() -> None:
         "puter",
         "ollama",
     }
+
+
+# --- Task profiles -------------------------------------------------------
+
+
+def test_title_and_summarise_are_chat_capability_tasks() -> None:
+    """Four tasks, two capabilities — so an operator configures two chains."""
+    assert TaskProfile.CHAT.requires_vision is False
+    assert TaskProfile.TITLE.requires_vision is False
+    assert TaskProfile.SUMMARISE.requires_vision is False
+    assert TaskProfile.VISION.requires_vision is True
+
+
+def test_a_title_draws_on_the_chat_model_list() -> None:
+    config = ProviderConfig(
+        name="groq", api_key="gsk-x", models=("chat-model",), vision_models=("sees-images",)
+    )
+
+    assert config.models_for(TaskProfile.TITLE) == ("chat-model",)
+    assert config.models_for(TaskProfile.SUMMARISE) == ("chat-model",)
+
+
+def test_every_task_has_sampling_defaults_and_a_title_is_the_tightest() -> None:
+    assert set(TASK_DEFAULTS) == set(TaskProfile)
+    assert TASK_DEFAULTS[TaskProfile.TITLE].max_tokens < TASK_DEFAULTS[TaskProfile.CHAT].max_tokens
+    assert (
+        TASK_DEFAULTS[TaskProfile.TITLE].temperature < TASK_DEFAULTS[TaskProfile.CHAT].temperature
+    )
+
+
+# --- Capability filtering ------------------------------------------------
+
+
+def test_a_provider_that_cannot_carry_an_image_is_dropped_from_the_vision_ladder() -> None:
+    configs = _configs(
+        cerebras=ProviderConfig(name="cerebras", api_key="csk-x", vision_models=("anything",)),
+        gemini=ProviderConfig(name="gemini", api_key="AIza-x", vision_models=("flash",)),
+    )
+
+    ladder, skipped = build_attempt_ladder(
+        ["cerebras", "gemini"],
+        configs,
+        TaskProfile.VISION,
+        capabilities={"cerebras": False, "gemini": True},
+    )
+
+    assert [str(attempt) for attempt in ladder] == ["gemini/flash"]
+    assert skipped == ["cerebras: this provider cannot accept images"]
+
+
+def test_capability_is_ignored_for_a_chat_ladder() -> None:
+    """A text-only provider is a perfectly good chat rung."""
+    configs = _configs(cerebras=ProviderConfig(name="cerebras", api_key="csk-x", models=("fast",)))
+
+    ladder, _ = build_attempt_ladder(
+        ["cerebras"], configs, TaskProfile.CHAT, capabilities={"cerebras": False}
+    )
+
+    assert [str(attempt) for attempt in ladder] == ["cerebras/fast"]
+
+
+def test_unknown_capability_is_not_treated_as_false_when_none_is_supplied() -> None:
+    """`make check-env` builds the ladder before any client exists."""
+    configs = _configs(gemini=ProviderConfig(name="gemini", api_key="k", vision_models=("f",)))
+
+    ladder, _ = build_attempt_ladder(["gemini"], configs, TaskProfile.VISION)
+
+    assert len(ladder) == 1
+
+
+def test_the_account_id_is_read_generically_rather_than_special_cased() -> None:
+    configs = load_provider_configs({"CLOUDFLARE_ACCOUNT_ID": "acc-1", "CLOUDFLARE_API_KEY": "k"})
+
+    assert configs["cloudflare"].account_id == "acc-1"

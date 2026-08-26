@@ -308,30 +308,99 @@ is what "navigable" means in this phase.
 
 ---
 
-## Phase 5 — LLM router
+## Phase 5 — LLM router — **COMPLETE**
 
 *Deliberately after navigation:* read-only value ships before any provider dependency exists.
 
-**Work**
-1. `LlmClient` port; task profiles (`chat`, `vision`, `title`, `summarise`) with capability
-   requirements. The **attempt ladder** — ordered (provider, model) pairs expanded from the
-   chains and each provider's model list — is already built and unit-tested in
-   `llm/plan.py` (delivered early in phase 0, since operators configure it in `.env`).
-2. OpenAI-compatible base adapter covering **nvidia, openrouter, groq, cerebras, mistral, ollama**.
-3. Dedicated adapters for **gemini**, **cloudflare** (Workers AI, needs account id) and **puter**.
-4. Execute the ladder: providers lacking a required capability are skipped at build time.
-5. Retry with exponential backoff + jitter, honouring `Retry-After`; on exhaustion advance one
-   rung — the next model of the same provider, then the next provider.
-6. Per-provider circuit breaker with cool-down and half-open probing. A provider-level failure
-   (auth, unreachable, sustained 5xx) skips **all** that provider's remaining rungs at once,
-   rather than burning retries on models that cannot answer.
-7. Usage accounting: provider, model, latency, tokens, outcome — logged and surfaced in `/status`.
-8. Per-user daily call cap as a cost guard.
+**Delivered**
 
-**Definition of Done** — with the first two rungs of the ladder forced to fail, a request still
-succeeds through the third, whether that rung is another model of the same provider or a
-different provider; `/status` reports circuit states accurately; a fault-injection test
-suite covers 429, 5xx, timeout and malformed-response paths for every adapter.
+| Item | Where |
+|---|---|
+| `LlmClient` port — one call, `complete`; message/image/usage model | `ports/llm.py` |
+| Typed errors carrying two routing answers: `retryable`, `provider_level` | `ports/llm_errors.py` |
+| Task profiles `chat` `vision` `title` `summarise`, with per-task sampling defaults | `llm/plan.py` |
+| OpenAI-compatible adapter — **nvidia, openrouter, groq, cerebras, mistral, ollama** | `llm/base.py` |
+| `GeminiClient` — header auth, model in the path, no system role, `inline_data` images | `llm/gemini.py` |
+| `CloudflareClient` — account id in the URL, `200`-with-`success:false` failures | `llm/cloudflare.py` |
+| `PuterClient` — the `drivers/call` RPC dialect, several back-end response shapes | `llm/puter.py` |
+| The ladder walker: retry, backoff with full jitter, `Retry-After`, rung and provider advance | `llm/router.py` |
+| Per-provider circuit breaker: closed / open / half-open with a single probe | `llm/breaker.py` |
+| Usage ledger (provider, model, latency, tokens, outcome) and the per-user daily cap | `llm/usage.py` |
+| Build-time assembly: which clients exist, which rungs survive the capability check | `llm/factory.py` |
+| `/status` AI section: first rung per task, open circuits with cool-down, usage, quota | `bot/commands.py` |
+| Per-provider setup, quirks, chain design and failure triage | [LLM_PROVIDERS.md](LLM_PROVIDERS.md) |
+| Opt-in live provider suite, skipping itself when no chain is configured | `tests/test_live_llm.py` |
+
+**Design decisions worth stating**
+
+- **Adapters never retry, never fail over, never sleep.** One request in, one typed result out.
+  The router owns the ladder, and an adapter that also retried would silently multiply every
+  configured retry count — `LLM_RETRIES_PER_MODEL=3` would mean nine calls, not four.
+- **The router routes on two questions, not on status codes.** Adapters answer *is another attempt
+  at this rung worth making?* and *is the provider itself broken, rather than this model?* by
+  choosing an error type. Getting that split right is what stops a bad API key from burning nine
+  retries across three models that were never going to answer: a 401 costs **one** call.
+- **A 429 is retryable but not provider-level.** Quotas are usually per model, so the next model of
+  the same provider often still has budget — treating a rate limit as a provider outage would
+  throw away the rest of a working provider.
+- **A malformed 200 never trips the breaker.** Sampling can produce an empty completion, so it is
+  retryable; but the provider is *answering*, and counting it against the circuit would
+  short-circuit a provider that is healthy.
+- **The half-open state admits exactly one probe.** Without that rule, every request queued during
+  an outage becomes a probe the instant the cool-down expires, and they all hit a provider that is
+  still down. A failed probe re-opens for a full fresh cool-down.
+- **A long `Retry-After` abandons the rung rather than sleeping through it.** Beyond 30 seconds,
+  the next rung is the faster answer, and a Telegram user is waiting.
+- **Capability is checked when the ladder is built, not on the first photo.** `cerebras` is
+  text-only and `cloudflare` needs an account id its key does not carry; both are dropped at
+  startup with a reason in the log and in `/status`, rather than failing at request time.
+- **The daily cap counts requests, not attempts.** One `/summarize` that fails over across four
+  rungs is one call against the user's budget — charging per attempt would punish a user for a
+  provider outage they did not cause. A request that never reaches a provider costs nothing.
+- **`title` and `summarise` share the chat chain.** Four tasks, two capabilities: an operator
+  configures two chains, and the sampling differences live next to the task profile so no caller
+  carries the numbers.
+
+**Two problems the work surfaced**
+
+- **`discoverygram.llm` could not re-export the router.** `Settings` imports `llm.plan` to build
+  its ladders, and the router imports `Settings` — so re-exporting `router` and `factory` from the
+  package `__init__` closed an import cycle that broke every test at collection time. The package
+  now re-exports only `plan`; the router is imported from its module, which is also where the
+  docstring explaining it lives.
+- **The test suite was reading the developer's real provider keys.** `conftest`'s isolation
+  fixture cleared a hand-listed set of variables, and the nine providers x five variables were not
+  in it — so a machine with `GROQ_API_KEY` set would build a different ladder than CI. The fixture
+  now clears every `<PROVIDER>_*` variable, generated from `KNOWN_PROVIDERS`.
+
+**Verified, not assumed**
+
+- `make check` green: ruff clean, mypy strict clean on 95 files, **706 tests passing at 94%
+  coverage**, plus 26 live tests behind `-m live` — `router.py` 99%, `usage.py` and `plan.py`
+  100%, `breaker.py` 97%, `base.py` 94%, `factory.py` 97%.
+- **The Definition of Done is asserted twice**: with the first two rungs forced to fail, the third
+  serves — once where the third rung is a different provider, and once where it is another model
+  of the same provider.
+- **A rejected API key is proven to cost one call**, not one per model: the remaining rungs of that
+  provider are skipped in a single step and the next provider answers.
+- An open circuit is proven to skip its provider **without calling it at all**, and a successful
+  call is proven to close a circuit that had been accumulating failures.
+- Backoff is proven to grow `1, 2, 4, 8, 16` and to cap; `Retry-After` is proven to win over it,
+  and a one-hour `Retry-After` is proven to advance the rung with no sleep.
+- A model-level failure is proven **never** to be retried, however high `LLM_RETRIES_PER_MODEL` is.
+- **Every adapter is fault-injected** across 401, 403, 404, 429, 400, 5xx, timeout, connection
+  error and six shapes of malformed 200 — including the `200`-with-`success:false` that Cloudflare
+  and Puter use to report failure, which no status-code check would catch.
+- Gemini is proven to send its key in a header and never in a query string, to lift the system
+  message out of `contents`, and to treat a safety block as a model-level failure.
+- A four-rung failover is proven to cost the user **one** call against the daily cap, and a request
+  that never reaches a provider is proven to cost nothing.
+- Every `/status` reply is asserted MarkdownV2-safe, including a tripped circuit line and model
+  names full of `.` and `-`.
+
+**Not verified** — no provider credentials were available, so nothing here has spoken to a real
+provider. Every adapter is tested against recorded and injected responses; the first real
+completion is not.
 
 ---
 
@@ -406,7 +475,7 @@ losing user state, and reports its degradation honestly through `/status` and `/
 | Milestone | Phases | Demonstrable outcome |
 |---|---|---|
 | **M1 — Read-only bot** ✅ | 0–4 | Search, browse and read the whole vault from Telegram |
-| **M2 — Resilient LLM layer** | 5 | Multi-provider chat and vision with retry and failover |
+| **M2 — Resilient LLM layer** ✅ | 5 | Multi-provider chat and vision with retry and failover |
 | **M3 — Full note authoring** | 6 | Image-to-note with generated title, preview and save |
 | **M4 — Production release** | 7–8 | Hardened, containerised, fully documented v1.0 |
 
@@ -425,20 +494,26 @@ early cut-line if scope needs trimming.
 | ~~Unbounded `/api/search` with no default limit~~ | — | **Closed in phase 3.** Explicit `limit` enforced in the adapter and asserted in the service; a full page is reported as truncated so the user knows results were cut |
 | Telegram formatting and size limits | Broken rendering on real notes | Centralised renderer, every reply asserted MarkdownV2-safe against every reserved character individually, tables, fences and 4096-character boundaries. Has already caught an unsendable `/status` and a faulty assertion |
 | ~~`callback_data` 64-byte limit~~ | — | **Closed in phase 2.** Opaque token plus server-side session store, proven against a path three times the limit |
-| LLM cost drift | Unbounded spend | Per-user daily caps, usage accounting, local `ollama` as a chain terminator |
+| LLM cost drift | Unbounded spend | **Closed in phase 5.** Per-user daily cap counted per UTC day (failover costs one call, not one per rung), usage accounted per provider and reported in `/status`, local `ollama` documented as a chain terminator |
 | Third-party libraries logging our secrets | Token in the logs | Found in phase 2: python-telegram-bot logs the Bot API URL. Literal secret values are scrubbed from both logging pipelines, verified at `LOG_LEVEL=DEBUG` |
 | Telegram bot API caps file downloads at 20 MB | Large attachments rejected | Validate early, tell the user the limit, document it |
 
 ## Open items
 
-Phases 0 to 4 are complete — milestone **M1, the read-only bot**, is finished — and were built
-without live credentials. What is still needed:
+Phases 0 to 5 are complete — milestones **M1, the read-only bot** and **M2, the resilient LLM
+layer** — and all were built without live credentials. What is still needed:
 
 1. `NOTEDISCOVERY_URL` (with port) and the API key of the live instance — if the instance runs
    unauthenticated, say so, the adapter supports both.
 2. BotFather token and the list of Telegram user ids to allow-list. The bot core is finished and
    tested, but has never spoken to the Bot API; this is what turns that into a running bot.
-3. Which LLM providers already have credentials, so the phase 5 chains start from real keys.
+3. **At least one LLM provider key, and ideally two from different companies.** The router is
+   finished and fault-injected, but has never spoken to a provider. `make check-env` prints the
+   exact ladder a set of keys produces, so this can be checked the moment they exist. `ollama`
+   needs no key at all and is the cheapest way to see the ladder work end to end.
 4. A run of `make test-live` and `make verify-contract` against the real vault. Both behaviours
    they probe are now confirmed from source; the run is what turns "confirmed in code" into
    "confirmed in production".
+
+Phase 6 is next: it consumes the router directly, and its headline scenario — a photo plus a
+caption becoming a note — is the first thing a real provider key makes demonstrable.

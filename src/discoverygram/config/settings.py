@@ -7,6 +7,7 @@ Invalid or missing required values fail fast at startup with an explicit message
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal
@@ -210,10 +211,19 @@ class Settings(BaseSettings):
         merged.update(os.environ)
         return load_provider_configs(merged)
 
-    def attempt_ladder(self, task: TaskProfile) -> tuple[list[Attempt], list[str]]:
-        """Ordered (provider, model) attempts for a task, plus skip reasons."""
-        chain = self.llm_chain_vision if task is TaskProfile.VISION else self.llm_chain_chat
-        return build_attempt_ladder(chain, self.provider_configs(), task)
+    def attempt_ladder(
+        self,
+        task: TaskProfile,
+        *,
+        capabilities: Mapping[str, bool] | None = None,
+    ) -> tuple[list[Attempt], list[str]]:
+        """Ordered (provider, model) attempts for a task, plus skip reasons.
+
+        `TITLE` and `SUMMARISE` are chat-capability tasks and share the chat
+        chain: the operator configures two chains, not one per task.
+        """
+        chain = self.llm_chain_vision if task.requires_vision else self.llm_chain_chat
+        return build_attempt_ladder(chain, self.provider_configs(), task, capabilities=capabilities)
 
     @property
     def notediscovery_headers(self) -> dict[str, str]:

@@ -9,6 +9,7 @@ read and create notes — including LLM-assisted creation from images and unstru
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Components, layering, data flow, key design decisions |
 | [FEATURES.md](FEATURES.md) | Functional catalogue: commands, flows, UX behaviour |
 | [CONFIGURATION.md](CONFIGURATION.md) | Full `.env` reference |
+| [LLM_PROVIDERS.md](LLM_PROVIDERS.md) | Per-provider setup, dialect quirks, chain design, failure triage |
 | [notediscovery-contract.md](notediscovery-contract.md) | Verified REST + MCP contract of NoteDiscovery 0.31.3 |
 | [dockerhub-overview.md](dockerhub-overview.md) | Text published as the Docker Hub repository overview |
 
@@ -41,9 +42,16 @@ however long the browse.
 
 **Phase 4 complete, and with it milestone M1 — the read-only bot.** Tree browsing with breadcrumbs,
 note rendering with `paged` and `split` modes, wiki-link buttons, backlinks, graph-related notes,
-the per-note action bar, and folder operations. `make check` is green at 93% coverage across 517
-tests, with 21 live tests (`make test-live`) waiting on credentials. Phase 5 (the LLM router) is
-next — the first phase that needs a provider key.
+the per-note action bar, and folder operations.
+
+**Phase 5 complete — the LLM router.** Nine providers behind one `LlmClient` port: one adapter for
+the six OpenAI-compatible ones, dedicated adapters for `gemini`, `cloudflare` and `puter`. A
+request walks the (provider, model) ladder with retry, exponential backoff and `Retry-After`
+awareness; a per-provider circuit breaker skips a provider's remaining models in one step rather
+than burning retries on a rejected key. Usage is accounted per provider and reported in `/status`,
+and a per-user daily cap bounds cost. `make check` is green at 94% coverage across 706 tests, with
+26 live tests (`make test-live`) waiting on credentials. See
+[LLM_PROVIDERS.md](LLM_PROVIDERS.md).
 
 The version now comes from the git tag rather than a literal — see
 [CONFIGURATION.md](CONFIGURATION.md#versioning).

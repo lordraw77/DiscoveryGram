@@ -11,7 +11,13 @@ import sys
 from pydantic import ValidationError
 
 from discoverygram.config import Settings
-from discoverygram.llm import TaskProfile
+from discoverygram.llm import KNOWN_PROVIDERS, TaskProfile
+from discoverygram.llm.factory import provider_supports_vision
+
+# The same capability table the router uses, so the ladder printed here is the
+# ladder that will actually be walked — a text-only provider is shown as
+# skipped rather than as a rung that would fail on the first photo.
+CAPABILITIES = {name: provider_supports_vision(name) for name in KNOWN_PROVIDERS}
 
 
 def _mark(present: bool) -> str:
@@ -42,8 +48,15 @@ def main() -> int:
     print(f"  transport            {settings.notediscovery_transport.value}")
     print("\nLLM router")
     print(f"  retries per model    {settings.llm_retries_per_model}")
+    print(f"  request timeout      {settings.llm_request_timeout_s}s")
+    print(
+        f"  circuit breaker      opens after {settings.llm_circuit_failure_threshold} "
+        f"failures, cools down {settings.llm_circuit_reset_s}s"
+    )
+    daily = settings.llm_daily_call_limit_per_user
+    print(f"  daily cap per user   {daily if daily else 'disabled'}")
     for task in (TaskProfile.CHAT, TaskProfile.VISION):
-        ladder, skipped = settings.attempt_ladder(task)
+        ladder, skipped = settings.attempt_ladder(task, capabilities=CAPABILITIES)
         print(f"\n  {task.value} attempt order:")
         if ladder:
             for position, attempt in enumerate(ladder, start=1):
@@ -68,7 +81,7 @@ def main() -> int:
         (TaskProfile.CHAT, "LLM-assisted commands stop working"),
         (TaskProfile.VISION, "image-to-note stops working"),
     ):
-        ladder, _ = settings.attempt_ladder(task)
+        ladder, _ = settings.attempt_ladder(task, capabilities=CAPABILITIES)
         providers = {attempt.provider for attempt in ladder}
         if not ladder:
             warnings.append(f"No usable {task.value} model, so {feature}.")

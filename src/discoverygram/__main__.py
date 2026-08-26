@@ -29,6 +29,7 @@ from discoverygram.app import probe_instance
 from discoverygram.bot.application import BotRunner, build_application, build_deps
 from discoverygram.config import Settings
 from discoverygram.health import HealthServer, ReadinessCheck
+from discoverygram.llm.factory import build_router
 from discoverygram.util.logging import configure_logging, get_logger
 
 log = get_logger(__name__)
@@ -58,8 +59,15 @@ async def run() -> None:
         level=settings.log_level,
         log_format=settings.log_format,
         # Scrubbed out of third-party records: python-telegram-bot logs the Bot
-        # API URL, which carries the token, on every request it builds.
-        secrets=(settings.telegram_bot_token, settings.notediscovery_api_key),
+        # API URL, which carries the token, on every request it builds. Every
+        # provider key is scrubbed for the same reason — httpx does not log
+        # headers today, but nine third-party endpoints is nine chances for one
+        # of them to end up in a traceback or a debug dump.
+        secrets=(
+            settings.telegram_bot_token,
+            settings.notediscovery_api_key,
+            *(config.api_key for config in settings.provider_configs().values()),
+        ),
     )
 
     log.info(
@@ -73,6 +81,10 @@ async def run() -> None:
 
     notes = build_note_store(settings)
     sessions = build_session_store(settings)
+    # Built before the health server so its ladder is logged early: an operator
+    # reading the startup log sees which (provider, model) rungs exist, and why
+    # any configured provider was skipped, before anything else happens.
+    llm = build_router(settings)
 
     health = HealthServer(port=settings.health_port, version=__version__)
     health.register_check("notediscovery", notes.health)
@@ -85,7 +97,7 @@ async def run() -> None:
     if not state.healthy:
         log.warning("notediscovery_not_reachable_at_startup", url=str(settings.notediscovery_url))
 
-    deps = build_deps(settings, notes, sessions, state)
+    deps = build_deps(settings, notes, sessions, state, llm)
     runner = BotRunner(build_application(deps), settings)
 
     stop = asyncio.Event()
@@ -101,6 +113,7 @@ async def run() -> None:
         await runner.stop()
         await health.stop()
         await sessions.aclose()
+        await llm.aclose()
         await notes.aclose()
 
 

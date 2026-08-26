@@ -27,6 +27,10 @@ from discoverygram.bot.deps import DEPS_KEY, BotDeps
 from discoverygram.bot.search import COMMANDS as SEARCH_COMMANDS
 from discoverygram.bot.tokens import CallbackTokens
 from discoverygram.config import Settings
+from discoverygram.llm.breaker import CircuitBreaker
+from discoverygram.llm.plan import Attempt, TaskProfile
+from discoverygram.llm.router import LlmRouter, TaskLadder
+from discoverygram.llm.usage import DailyCallCap, UsageLedger
 from discoverygram.ports.errors import Unavailable
 from discoverygram.ports.model import InstanceConfig, VaultStats
 from tests.fixtures.telegram import (
@@ -68,6 +72,7 @@ def make_context(
     *,
     notes: StubNoteStore | None = None,
     instance: InstanceState | None = None,
+    llm: LlmRouter | None = None,
 ) -> FakeContext:
     sessions = MemorySessionStore(default_ttl_s=3600)
     deps = BotDeps(
@@ -76,6 +81,7 @@ def make_context(
         sessions=sessions,
         tokens=CallbackTokens(sessions, ttl_s=3600),
         instance=instance or InstanceState(config=InstanceConfig(version="0.31.3"), healthy=True),
+        llm=llm,
     )
     return FakeContext(bot, {DEPS_KEY: deps})
 
@@ -221,4 +227,108 @@ async def test_an_unknown_command_gets_an_answer(settings: Settings, bot: FakeBo
     await unknown_command(make_update(bot, text="/nope"), as_context(make_context(settings, bot)))
 
     assert "/help" in bot.last_text
+    assert_markdown_v2_safe(bot.last_text)
+
+
+# --- The AI section of /status ------------------------------------------
+
+
+def make_router(
+    settings: Settings,
+    *,
+    chat: list[tuple[str, str]],
+    vision: list[tuple[str, str]] | None = None,
+    breaker: CircuitBreaker | None = None,
+    cap: DailyCallCap | None = None,
+) -> LlmRouter:
+    def ladder(task: TaskProfile, rungs: list[tuple[str, str]]) -> TaskLadder:
+        return TaskLadder(task=task, attempts=tuple(Attempt(provider=p, model=m) for p, m in rungs))
+
+    return LlmRouter(
+        settings,
+        {},
+        {
+            TaskProfile.CHAT: ladder(TaskProfile.CHAT, chat),
+            TaskProfile.VISION: ladder(TaskProfile.VISION, vision or []),
+        },
+        breaker=breaker,
+        ledger=UsageLedger(),
+        cap=cap,
+    )
+
+
+async def test_status_names_the_rung_that_would_serve_the_next_request(
+    settings: Settings, bot: FakeBot
+) -> None:
+    router = make_router(
+        settings,
+        chat=[("groq", "llama-3.3-70b"), ("ollama", "llama3")],
+        vision=[("gemini", "gemini-2.0-flash")],
+    )
+
+    await status(make_update(bot), as_context(make_context(settings, bot, llm=router)))
+
+    text = bot.last_text
+    assert "groq/llama\\-3\\.3\\-70b" in text
+    assert "1 more" in text
+    assert "gemini/gemini\\-2\\.0\\-flash" in text
+    assert_markdown_v2_safe(text)
+
+
+async def test_status_says_when_a_task_has_no_model_at_all(
+    settings: Settings, bot: FakeBot
+) -> None:
+    router = make_router(settings, chat=[("ollama", "llama3")], vision=[])
+
+    await status(make_update(bot), as_context(make_context(settings, bot, llm=router)))
+
+    assert "none configured" in bot.last_text
+    assert_markdown_v2_safe(bot.last_text)
+
+
+async def test_status_names_a_tripped_provider_and_its_cool_down(
+    settings: Settings, bot: FakeBot
+) -> None:
+    """A tripped breaker is otherwise invisible: the bot merely seems slow."""
+    breaker = CircuitBreaker(failure_threshold=1, reset_s=120.0)
+    breaker.record_failure("groq", reason="LlmAuthError", immediate=True)
+    router = make_router(settings, chat=[("groq", "a"), ("ollama", "b")], breaker=breaker)
+
+    await status(make_update(bot), as_context(make_context(settings, bot, llm=router)))
+
+    text = bot.last_text
+    assert "groq: circuit open" in text
+    assert "retrying in" in text
+    assert_markdown_v2_safe(text)
+
+
+async def test_status_reports_the_callers_remaining_quota(settings: Settings, bot: FakeBot) -> None:
+    cap = DailyCallCap(10)
+    for _ in range(4):
+        cap.consume(ALLOWED_USER_ID)
+    router = make_router(settings, chat=[("ollama", "a")], cap=cap)
+
+    await status(make_update(bot), as_context(make_context(settings, bot, llm=router)))
+
+    assert "6 of 10 left" in bot.last_text
+    assert_markdown_v2_safe(bot.last_text)
+
+
+async def test_status_hides_the_quota_line_when_the_cap_is_disabled(
+    settings: Settings, bot: FakeBot
+) -> None:
+    router = make_router(settings, chat=[("ollama", "a")], cap=DailyCallCap(0))
+
+    await status(make_update(bot), as_context(make_context(settings, bot, llm=router)))
+
+    assert "daily quota" not in bot.last_text
+
+
+async def test_status_says_ai_is_not_configured_when_there_is_no_router(
+    settings: Settings, bot: FakeBot
+) -> None:
+    """Milestone M1 — a bot with no LLM — must still produce a sendable /status."""
+    await status(make_update(bot), as_context(make_context(settings, bot, llm=None)))
+
+    assert "Not configured" in bot.last_text
     assert_markdown_v2_safe(bot.last_text)

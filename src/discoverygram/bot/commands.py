@@ -18,6 +18,8 @@ from telegram.ext import ContextTypes
 from discoverygram import __version__
 from discoverygram.bot.deps import BotDeps, deps_of
 from discoverygram.bot.render import escape_markdown_v2 as esc
+from discoverygram.llm.plan import TaskProfile
+from discoverygram.llm.router import LlmRouter
 from discoverygram.ports.errors import NoteStoreError
 from discoverygram.util.logging import get_logger
 
@@ -182,6 +184,10 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ),
     ]
 
+    lines += _llm_lines(
+        deps.llm, user_id=update.effective_user.id if update.effective_user else None
+    )
+
     if not healthy:
         lines += ["", _text("The vault is unreachable, so note commands will fail.")]
     elif not instance.search_available:
@@ -213,6 +219,74 @@ async def _vault_line(deps: BotDeps) -> str:
     return _field(
         "Vault", _text(f"{stats.notes_count} notes, {stats.tags_count} tags"), indent=True
     )
+
+
+def _llm_lines(router: LlmRouter | None, *, user_id: int | None) -> list[str]:
+    """The LLM section of `/status`.
+
+    Reports the two things an operator actually needs when a generation
+    command misbehaves: **which rung would serve the next request**, and
+    **which providers are currently short-circuited**. A tripped breaker is
+    otherwise invisible — the bot just seems slow to fail over — so it is
+    named here with its remaining cool-down.
+
+    Every literal goes through the escaper: `half-open`, `3/5` and `(0 left)`
+    all carry MarkdownV2 reserved characters, and one unescaped means the Bot
+    API rejects the whole message rather than that character.
+    """
+    if router is None:
+        return ["", _heading("AI"), "  " + _text("Not configured.")]
+
+    status = router.status()
+    lines = ["", _heading("AI")]
+
+    for task in (TaskProfile.CHAT, TaskProfile.VISION):
+        ladder = router.ladder(task)
+        if not ladder.usable:
+            value = _text("none configured")
+        elif len(ladder.attempts) > 1:
+            # The first rung is what serves the next request; the count is what
+            # says whether there is anything behind it.
+            value = _text(f"{ladder.attempts[0]} +{len(ladder.attempts) - 1} more")
+        else:
+            value = _text(str(ladder.attempts[0]))
+        lines.append(_field(task.value.capitalize(), value, indent=True))
+
+    degraded = [circuit for circuit in status.circuits if not circuit.healthy]
+    if degraded:
+        for circuit in degraded:
+            lines.append(
+                "  ⚠️ "
+                + _text(
+                    f"{circuit.provider}: circuit {circuit.state.value}, "
+                    f"retrying in {int(circuit.opens_remaining_s)}s"
+                )
+            )
+    elif status.circuits:
+        lines.append(_field("Providers", _text("all healthy"), indent=True))
+
+    if status.requests:
+        failed = status.requests - status.successful_requests
+        lines.append(
+            _field(
+                "Requests",
+                _text(
+                    f"{status.successful_requests} served, {failed} failed, "
+                    f"{status.attempts} provider calls"
+                ),
+                indent=True,
+            )
+        )
+
+    remaining = router.cap.remaining(user_id) if user_id is not None else None
+    if remaining is not None:
+        lines.append(
+            _field(
+                "Your daily quota", _text(f"{remaining} of {router.cap.limit} left"), indent=True
+            )
+        )
+
+    return lines
 
 
 def _heading(text: str) -> str:

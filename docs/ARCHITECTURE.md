@@ -277,14 +277,25 @@ stdlib, and the libraries that narrate requests are quieted to WARNING.
 ## 6. LLM router (proprietary)
 
 ```
-LlmRouter
-  ├── task profile        (chat | vision | title-generation | summarise)
+LlmRouter                             llm/router.py
+  ├── task profile        (chat | vision | title | summarise)   llm/plan.py
   ├── attempt ladder      ordered (provider, model) pairs, expanded from .env
-  ├── retry policy        exponential backoff + jitter, retry-after aware
-  ├── circuit breaker     per provider, opens on repeated failures
-  └── provider adapters   nvidia, openrouter, groq, gemini, cloudflare,
-                          cerebras, mistral, puter, ollama
+  ├── retry policy        exponential backoff + jitter, Retry-After aware
+  ├── circuit breaker     per provider, opens on repeated failures  llm/breaker.py
+  ├── usage ledger        provider, model, latency, tokens, outcome  llm/usage.py
+  ├── daily cap           LLM_DAILY_CALL_LIMIT_PER_USER, per UTC day
+  └── provider adapters
+        OpenAiCompatibleClient  nvidia, openrouter, groq, cerebras,
+                                mistral, ollama          llm/base.py
+        GeminiClient            llm/gemini.py
+        CloudflareClient        llm/cloudflare.py
+        PuterClient             llm/puter.py
 ```
+
+The port is deliberately narrow — `LlmClient.complete`, one call — because everything interesting
+lives above it. **Adapters never retry, never fail over and never sleep**: one request in, one
+typed result out. An adapter that also retried would silently multiply every configured retry
+count.
 
 ### The attempt ladder
 
@@ -315,16 +326,55 @@ providers that are skipped — no credentials, no model listed for the task, unk
 reported with their reason instead of vanishing silently. `make check-env` prints the resulting
 ladder, which is how an operator confirms that a chain does what they think it does.
 
+### Task profiles
+
+Four tasks, two capabilities: `chat`, `title` and `summarise` are chat-capability tasks and share
+`LLM_CHAIN_CHAT` and `<P>_MODELS`; only `vision` uses the vision chain. They differ in sampling
+defaults, which live next to the profile — so a caller asks for a *task* and never carries the
+numbers. An operator configures two chains, not four.
+
 ### Routing rules
 
-- Each adapter declares its **capabilities** (vision, streaming, max context, JSON mode); a rung
-  whose model cannot satisfy the task profile is never attempted.
-- **Retry** covers transient failures (429, 5xx, timeouts, connection errors) and honours
-  `Retry-After`; exhausting retries advances to the next rung.
-- A provider whose circuit is open is skipped until its cool-down elapses.
-- Most providers are OpenAI-compatible and share a base adapter; `gemini`, `cloudflare` and
-  `puter` need dedicated request/response mapping.
-- Every call is logged with provider, model, latency, token usage and outcome.
+The router routes on two questions, and adapters answer them by choosing an error type:
+
+- **`retryable`** — is another attempt at this *same* rung worth making? (429, 5xx, timeout,
+  malformed body.)
+- **`provider_level`** — is the provider itself broken, rather than this one model? (Rejected
+  credentials.)
+
+From those:
+
+- **Retry** covers retryable failures with exponential backoff and full jitter, honouring
+  `Retry-After` when the provider sends one. A `Retry-After` longer than 30 s abandons the rung
+  instead: a Telegram user is waiting, and the next rung is the faster answer.
+- **A model-level failure is never retried.** A 400, an unknown model or a refused prompt will
+  answer the same way next time; the rung is abandoned with no delay at all.
+- **A provider-level failure opens that provider's circuit immediately** and skips all its
+  remaining rungs at once. One rejected key costs one call, not `models x retries` of them.
+- **Capability is checked when the ladder is built**, not on the first photo: a text-only provider
+  (`cerebras`) and an unbuildable one (`cloudflare` with no account id) are dropped at startup with
+  a reason an operator can read.
+- Every *attempt* is logged and recorded with provider, model, latency, token usage and outcome;
+  `/status` reports the aggregate, the current first rung per task, and any open circuit with its
+  remaining cool-down.
+
+### The circuit breaker
+
+Three states, per provider. **Closed**: calls pass, failures are counted. **Open**: every call is
+refused for `LLM_CIRCUIT_RESET_S`. **Half-open**: exactly *one* probe is admitted — without that
+rule, every request queued during an outage becomes a probe the moment the cool-down expires and
+hammers a provider that is still down. A successful probe closes the circuit and forgets the
+failure count; a failed one re-opens it for a full fresh cool-down.
+
+The unit is the provider rather than the (provider, model) pair, because the failures worth
+short-circuiting are provider-wide: a revoked key, an unreachable host, a sustained outage.
+
+### Cost accounting
+
+Usage is recorded per attempt; the **daily cap counts requests**. One `/summarize` that fails over
+across four rungs is one call against the user's budget — charging per attempt would punish a user
+for a provider outage they did not cause. Both the ledger and the cap are in-process and reset on
+restart, which is the honest scope of a cost *guard* rather than a billing system.
 
 ## 7. Session and callback state
 

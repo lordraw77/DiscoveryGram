@@ -115,6 +115,16 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         async def stop(self) -> None:
             health.stopped = True
 
+    class RecordingRouter:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    llm = RecordingRouter()
+
+    monkeypatch.setattr(main_module, "build_router", lambda _s: llm)
     monkeypatch.setattr(main_module, "build_note_store", lambda _s: notes)
     monkeypatch.setattr(main_module, "build_session_store", lambda _s: sessions)
     monkeypatch.setattr(main_module, "HealthServer", FakeHealthServer)
@@ -122,7 +132,7 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(main_module, "BotRunner", RecordingRunner)
     # Stop immediately: run() otherwise waits for a signal forever.
     monkeypatch.setattr(main_module, "_install_signal_handlers", lambda stop: stop.set())
-    return {"notes": notes, "sessions": sessions, "health": health}
+    return {"notes": notes, "sessions": sessions, "health": health, "llm": llm}
 
 
 async def test_startup_brings_up_health_before_probing_the_instance(
@@ -141,6 +151,7 @@ async def test_shutdown_releases_everything_it_acquired(env: None, wired: dict[s
     assert RecordingRunner.instances[0].events == ["start", "stop"]
     assert wired["health"].stopped is True
     assert wired["sessions"].closed is True
+    assert wired["llm"].closed is True
     assert wired["notes"].closed is True
 
 
@@ -196,3 +207,23 @@ async def test_a_failed_start_still_tears_down_what_came_up(
     assert wired["health"].stopped is True
     assert wired["sessions"].closed is True
     assert wired["notes"].closed is True
+
+
+async def test_every_provider_key_is_scrubbed_from_the_logs(
+    monkeypatch: pytest.MonkeyPatch, env: None, wired: dict[str, Any]
+) -> None:
+    """Nine third-party endpoints is nine chances for a key to reach a traceback."""
+    del wired
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-super-secret-value")
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-another-secret-value")
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        main_module,
+        "configure_logging",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    await main_module.run()
+
+    assert "gsk-super-secret-value" in captured["secrets"]
+    assert "AIza-another-secret-value" in captured["secrets"]

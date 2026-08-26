@@ -104,10 +104,19 @@ so generated content is auditable.
 - `/ask <question>` — answer grounded in search results over the vault, with cited note paths.
 - `Refine` / `Regenerate` buttons wherever a generated artefact is shown.
 
-## 7. Reliability and operations (P5, P7)
+## 7. Reliability and operations (P5 done, P7)
 
-- Provider failover chain per task profile, with retry and circuit breaker.
-- `/status` — NoteDiscovery reachability, active transport, per-provider health and circuit state.
+- **Provider failover on (provider, model) pairs**, per task profile: a request retries the same
+  pair, then advances to the next model of that provider, then to the next provider. Backoff is
+  exponential with jitter and honours `Retry-After`.
+- **Per-provider circuit breaker.** A rejected key or a sustained outage skips *all* of that
+  provider's remaining models in one step, rather than burning retries on models that cannot
+  answer. Recovery is probed with a single half-open call.
+- **Per-user daily cap** on LLM-backed commands (`LLM_DAILY_CALL_LIMIT_PER_USER`, per UTC day).
+  Failover is free: one request is one call however many rungs it took.
+- `/status` — NoteDiscovery reachability, active transport, the first rung that would serve each
+  task, any open circuit with its remaining cool-down, per-provider usage, and the caller's
+  remaining quota.
 - `/cancel` — abort any multi-step flow.
 - Friendly error messages; full stack traces only in logs.
 - `/healthz` and `/readyz` HTTP endpoints for container orchestration.

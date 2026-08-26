@@ -82,15 +82,35 @@ Per provider — replace `<P>` with `NVIDIA`, `OPENROUTER`, `GROQ`, `GEMINI`, `C
 | Variable | Description |
 |---|---|
 | `<P>_API_KEY` | Credential. A provider without one is skipped and the reason logged — `ollama` is exempt |
-| `<P>_BASE_URL` | Override for self-hosted or regional endpoints |
+| `<P>_BASE_URL` | Override for self-hosted, proxied or regional endpoints. Every provider has a built-in default |
+| `<P>_ACCOUNT_ID` | Only Cloudflare uses it, and Cloudflare **requires** it: Workers AI puts the account id in the request URL |
 | `<P>_MODELS` | **Ordered, comma-separated** list of chat models, tried left to right |
 | `<P>_VISION_MODELS` | **Ordered, comma-separated** list of vision-capable models |
 
 A provider listed in a chain but with no model for that task is skipped, not silently retried with
 a default: leaving `<P>_VISION_MODELS` empty removes it from the vision ladder only.
 
-`CLOUDFLARE_ACCOUNT_ID` is additionally required for Cloudflare Workers AI.
-`OLLAMA_BASE_URL` defaults to `http://localhost:11434` and needs no key.
+Two provider-specific facts that change what a chain does:
+
+- **`cerebras` cannot carry an image.** It is dropped from the vision ladder at startup whatever
+  `CEREBRAS_VISION_MODELS` says, with the reason logged.
+- **`cloudflare` without `CLOUDFLARE_ACCOUNT_ID` is dropped entirely**, when clients are built —
+  not as a 404 on every attempt.
+
+`OLLAMA_BASE_URL` defaults to `http://localhost:11434`, needs no key, and has `/v1` appended for
+you if you leave it off. Inside a container, `localhost` means the container: use
+`http://host.docker.internal:11434`.
+
+Per-provider setup, dialect quirks and how to read a failure are in
+[LLM_PROVIDERS.md](LLM_PROVIDERS.md).
+
+### Task profiles
+
+Four tasks, two capabilities. `chat`, `title` and `summarise` are all chat-capability tasks and
+draw on `LLM_CHAIN_CHAT` and `<P>_MODELS`; only `vision` uses `LLM_CHAIN_VISION` and
+`<P>_VISION_MODELS`. The tasks differ in their sampling defaults — a title is short and nearly
+deterministic, a chat reply has room and some warmth — so a caller asks for a task and never
+configures the numbers. Two chains, not four.
 
 ## Sessions, cache and limits
 

@@ -41,6 +41,7 @@ from discoverygram.bot.errors import handle_error
 from discoverygram.bot.guard import enforce_allow_list
 from discoverygram.bot.tokens import CallbackTokens
 from discoverygram.config import Settings, TelegramMode
+from discoverygram.llm.router import LlmRouter
 from discoverygram.ports.note_store import NoteStore
 from discoverygram.ports.session_store import SessionStore
 from discoverygram.util.logging import get_logger
@@ -67,6 +68,7 @@ def build_deps(
     notes: NoteStore,
     sessions: SessionStore,
     instance: InstanceState,
+    llm: LlmRouter | None = None,
 ) -> BotDeps:
     return BotDeps(
         settings=settings,
@@ -74,6 +76,7 @@ def build_deps(
         sessions=sessions,
         tokens=CallbackTokens(sessions, ttl_s=settings.session_ttl_s),
         instance=instance,
+        llm=llm,
         started_at=time.monotonic(),
     )
 

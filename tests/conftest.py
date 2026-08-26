@@ -8,6 +8,7 @@ import pytest
 
 from discoverygram.adapters.rest import RestNoteStore
 from discoverygram.config import Settings
+from discoverygram.llm.plan import KNOWN_PROVIDERS
 
 # The minimum environment a valid Settings object needs.
 BASE_ENV = {
@@ -42,6 +43,20 @@ def env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "TELEGRAM_PARSE_MODE",
         "SESSION_TTL_S",
         "HEALTH_PORT",
+        "LLM_CHAIN_VISION",
+        "LLM_RETRIES_PER_MODEL",
+        "LLM_BACKOFF_BASE_S",
+        "LLM_REQUEST_TIMEOUT_S",
+        "LLM_CIRCUIT_FAILURE_THRESHOLD",
+        "LLM_CIRCUIT_RESET_S",
+        "LLM_DAILY_CALL_LIMIT_PER_USER",
+        # Every `<PROVIDER>_*` variable, so a developer's real keys and model
+        # lists can never reach a test's ladder.
+        *(
+            f"{provider.upper()}_{suffix}"
+            for provider in KNOWN_PROVIDERS
+            for suffix in ("API_KEY", "BASE_URL", "ACCOUNT_ID", "MODELS", "VISION_MODELS")
+        ),
     ]:
         monkeypatch.delenv(key, raising=False)
     for key, value in BASE_ENV.items():

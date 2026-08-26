@@ -14,6 +14,7 @@ from typing import Any
 from discoverygram.app.probe import InstanceState
 from discoverygram.bot.tokens import CallbackTokens
 from discoverygram.config import Settings
+from discoverygram.llm.router import LlmRouter
 from discoverygram.ports.note_store import NoteStore
 from discoverygram.ports.session_store import SessionStore
 
@@ -31,6 +32,10 @@ class BotDeps:
     # Mutable on purpose: a re-probe after the instance comes back replaces it,
     # and handlers must see the new state without being rebuilt.
     instance: InstanceState
+    # Optional on purpose: a bot with no provider credentials is a supported
+    # configuration — it is milestone M1 — and the LLM-backed commands refuse
+    # with a reason rather than the bot refusing to start.
+    llm: LlmRouter | None = None
     started_at: float = 0.0
     counters: dict[str, int] = field(default_factory=dict)
 
