@@ -47,7 +47,7 @@ it was, a search-disabled instance says so, and an empty result set says what wa
 
 Per-hit *open* buttons arrive with the note renderer in P4.
 
-## 4. Navigation (P4)
+## 4. Navigation (P4) — **shipped**
 
 - `/browse` — enter the note tree at the root; folders and notes as inline buttons. The tree is
   derived client-side from `GET /api/notes`, since NoteDiscovery exposes no tree endpoint.
@@ -57,13 +57,20 @@ Per-hit *open* buttons arrive with the note renderer in P4.
   `LONG_NOTE_MODE=paged`, respecting Telegram's 4096-character limit.
 - Markdown is converted to Telegram-safe MarkdownV2; unsupported constructs (tables, nested
   HTML) degrade to preformatted blocks.
-- Wiki-style `[[links]]` in a note body become buttons that jump to the linked note.
+- Wiki-style `[[links]]` in a note body become buttons that jump to the linked note, resolved by
+  stem, path or path-without-extension — the same three rules NoteDiscovery's own index uses. A
+  link that resolves to nothing is named in the message rather than silently dropped.
 - `/backlinks <path>` — notes linking to this one. `/related` — graph-adjacent notes.
-- Per-note actions: `Edit`, `Append`, `Add tag`, `Copy path`, `Backlinks`, `Share`,
-  `Delete` (with confirmation), `Show raw`.
-  `Edit` is a read-modify-write (the API's `PATCH` only appends); `Share` returns a public link.
-- Folder management: create, rename, move, delete.
-- `/open <path>` — jump straight to a note by path.
+- Per-note action bar: `Edit`, `Append`, `Tag`, `Backlinks`, `Related`, `Path`, `Raw`, `Share`,
+  `Delete`. `Edit` and `Append` wait for your next message; `/cancel` aborts. `Edit` is a
+  read-modify-write, since the API's `PATCH` only appends. `Append` timestamps what it adds.
+  `Tag` is idempotent. `Path` sends a tappable code span, Telegram having no clipboard API.
+  `Delete` asks first and cannot act twice.
+- Folder management: `/folder new|rename|move|delete`. Deleting says how many items it would
+  destroy and asks before doing it.
+- `/open <path>` — jump straight to a note by path. `/move <old> <new>` renames or moves one.
+- Search results carry an open button per hit, so search → note → folder → siblings → backlinks is
+  one continuous path.
 
 ## 5. Note creation (P6)
 

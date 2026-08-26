@@ -20,6 +20,8 @@ from collections.abc import AsyncIterator
 import pytest
 
 from discoverygram.adapters.rest import RestNoteStore
+from discoverygram.app.navigation import NavigationService
+from discoverygram.app.notes import NoteService
 from discoverygram.app.probe import InstanceState, probe_instance
 from discoverygram.app.search import SearchService
 from discoverygram.config import Settings
@@ -248,3 +250,90 @@ async def test_search_disabled_degrades_with_a_notice(live_store: RestNoteStore)
 
     assert not outcome.ran
     assert "disabled" in outcome.notice
+
+
+# --- Phase 4: navigation and the note actions -----------------------------
+
+
+def live_navigation(store: RestNoteStore) -> NavigationService:
+    return NavigationService(store, Settings())  # type: ignore[call-arg]
+
+
+async def test_every_note_is_reachable_from_the_root(live_store: RestNoteStore) -> None:
+    """The Definition of Done: bounded taps, against the real vault."""
+    navigation = live_navigation(live_store)
+    listing = await live_store.list_notes(limit=25)
+
+    for ref in listing.notes[:10]:
+        folder = ""
+        for segment in ref.path.split("/")[:-1]:
+            folder = f"{folder}/{segment}" if folder else segment
+            view = await navigation.folder(folder)
+            assert view.path == folder
+        leaf = await navigation.folder(folder)
+        assert any(entry.path == ref.path for entry in leaf.entries)
+
+
+async def test_a_real_note_renders_without_formatting_errors(
+    live_store: RestNoteStore,
+) -> None:
+    """Real bodies, not synthetic ones — the formatting risk lives in real vaults."""
+    from discoverygram.bot.notes import body_pages, render_note
+    from tests.fixtures.telegram import assert_markdown_v2_safe
+
+    listing = await live_store.list_notes(limit=25)
+    for ref in listing.notes[:15]:
+        note = await live_store.get_note(ref.path)
+        pages = body_pages(note)
+        for page in range(1, len(pages) + 1):
+            rendered = render_note(note, page, pages=pages)
+            assert len(rendered) <= 4096
+            assert_markdown_v2_safe(rendered)
+
+
+async def test_the_note_actions_round_trip(live_store: RestNoteStore, scratch_path: str) -> None:
+    """Edit, append, tag, share and delete against the live instance."""
+    service = NoteService(live_store)
+
+    await live_store.create_note(scratch_path, "original")
+
+    await service.replace(scratch_path, "rewritten")
+    assert (await live_store.get_note(scratch_path)).content.strip() == "rewritten"
+
+    await service.append(scratch_path, "added", timestamp=True)
+    assert "added" in (await live_store.get_note(scratch_path)).content
+
+    await service.add_tag(scratch_path, "discoverygramtest")
+    assert "#discoverygramtest" in (await live_store.get_note(scratch_path)).content
+
+    again = await service.add_tag(scratch_path, "discoverygramtest")
+    assert "Already tagged" in again.summary
+
+    link = await service.share(scratch_path)
+    assert link.url.startswith("http")
+    await live_store.unshare_note(scratch_path)
+
+    await service.delete(scratch_path)
+    with pytest.raises(NotFound):
+        await live_store.get_note(scratch_path)
+
+
+async def test_backlinks_and_related_answer(live_store: RestNoteStore) -> None:
+    listing = await live_store.list_notes(limit=5)
+    if not listing.notes:
+        pytest.skip("the vault is empty")
+
+    navigation = live_navigation(live_store)
+    path = listing.notes[0].path
+
+    assert isinstance(await navigation.backlinks(path), list)
+    assert isinstance(await navigation.related(path), list)
+
+
+async def test_folder_operations_round_trip(live_store: RestNoteStore) -> None:
+    navigation = live_navigation(live_store)
+    base = f"{SCRATCH_FOLDER}/folders-{uuid.uuid4().hex[:6]}"
+
+    await navigation.create_folder(base)
+    await navigation.rename_folder(base, f"{base}-renamed")
+    await navigation.delete_folder(f"{base}-renamed")

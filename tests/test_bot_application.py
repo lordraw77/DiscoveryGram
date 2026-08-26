@@ -19,6 +19,12 @@ from discoverygram.bot.application import (
     build_application,
     build_deps,
 )
+from discoverygram.bot.browse import (
+    ACT_ACTION,
+    NAV_ACTION,
+    NOTE_ACTION,
+    pending_input,
+)
 from discoverygram.bot.commands import COMMANDS, unknown_command
 from discoverygram.bot.deps import DEPS_KEY, BotDeps, deps_of
 from discoverygram.bot.guard import enforce_allow_list
@@ -289,3 +295,55 @@ def test_commands_are_offered_before_the_catch_all_text_handler(deps: BotDeps) -
     callbacks = [handler.callback for handler in message_handlers]
 
     assert callbacks.index(unknown_command) < callbacks.index(text_message)
+
+
+# --- Navigation wiring ----------------------------------------------------
+
+
+def test_the_navigation_commands_are_registered(deps: BotDeps) -> None:
+    application = build_application(deps)
+
+    registered = {
+        next(iter(handler.commands))
+        for handler in application.handlers[0]
+        if isinstance(handler, CommandHandler) and handler.commands
+    }
+
+    assert {"browse", "open", "backlinks", "related", "move", "folder"} <= registered
+
+
+def test_every_callback_action_has_exactly_one_handler(deps: BotDeps) -> None:
+    """Two handlers matching one prefix would run both on a single tap."""
+    application = build_application(deps)
+    patterns = [
+        str(getattr(handler.pattern, "pattern", handler.pattern))
+        for handler in application.handlers[0]
+        if isinstance(handler, CallbackQueryHandler) and handler.pattern
+    ]
+
+    for action in (NAV_ACTION, NOTE_ACTION, ACT_ACTION, PAGE_ACTION, "noop"):
+        matching = [pattern for pattern in patterns if pattern == f"^{action}:"]
+        assert len(matching) == 1, action
+
+
+def test_a_pending_edit_claims_the_message_before_the_search_handler(
+    deps: BotDeps,
+) -> None:
+    """Otherwise text meant as a note body would also be run as a query."""
+    application = build_application(deps)
+    callbacks = [
+        handler.callback
+        for handler in application.handlers[0]
+        if isinstance(handler, MessageHandler)
+    ]
+
+    assert callbacks.index(pending_input) < callbacks.index(text_message)
+
+
+def test_the_callback_actions_do_not_shadow_each_other() -> None:
+    """`note:` must not also match `noop:` or the pagination action."""
+    actions = [NAV_ACTION, NOTE_ACTION, ACT_ACTION, PAGE_ACTION, "noop"]
+
+    for action in actions:
+        others = [other for other in actions if other != action]
+        assert not any(f"{action}:".startswith(f"{other}:") for other in others), action

@@ -37,8 +37,13 @@ renderer and the global error handler.
 
 **Phase 3 complete.** All four search modes — full text, literal, tag and recent — with client-side
 ranking, term highlighting and pagination that costs no vault read and leaves one session entry
-however long the browse. `make check` is green at 93% coverage across 384 tests, with an opt-in
-live suite (`make test-live`) waiting on credentials. Phase 4 (navigation) is next.
+however long the browse.
+
+**Phase 4 complete, and with it milestone M1 — the read-only bot.** Tree browsing with breadcrumbs,
+note rendering with `paged` and `split` modes, wiki-link buttons, backlinks, graph-related notes,
+the per-note action bar, and folder operations. `make check` is green at 93% coverage across 517
+tests, with 21 live tests (`make test-live`) waiting on credentials. Phase 5 (the LLM router) is
+next — the first phase that needs a provider key.
 
 The version now comes from the git tag rather than a literal — see
 [CONFIGURATION.md](CONFIGURATION.md#versioning).

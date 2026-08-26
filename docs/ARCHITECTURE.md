@@ -221,6 +221,44 @@ escaped **first**, the term is escaped the same way, and occurrences are then fo
 text. Marking up first would let the escaper mangle its own markers. The term is regex-escaped too,
 because it comes from the vault — `a.b` must not match `axb`.
 
+### Navigation and the callback vocabulary
+
+Three actions carry the whole navigation surface, and all three follow one shape:
+
+```
+nav:<token>:<arg>    a folder listing   arg = page number | e<index> | up | root
+note:<token>:<arg>   a note body        arg = page number
+act:<token>:<verb>   an action on a note
+page:<token>:<arg>   search results     arg = page number | h<index>
+```
+
+The rule is **one token per view, not per button**. The token's payload holds what the whole view
+needs — a folder's entries, a note's path, a search's hits — and every button on it carries an
+argument instead of a token of its own. A nine-button action bar therefore costs one session entry,
+and paging a sixty-item folder costs none. Only *entering* a different view issues a new token,
+because that is genuinely new state rather than the same state at a different offset.
+
+A listing is rebuilt from its token rather than re-derived from the tree: a page turn should not
+depend on the vault being reachable, and page 2 must not show a different set of children than the
+page the reader came from.
+
+### Writing to a note
+
+`PATCH` appends only, so replacing a body is a read-modify-write over `POST`, which is an upsert.
+The read is not incidental — it makes editing a note that was deleted meanwhile fail as `NotFound`
+rather than silently re-creating it from the editor's buffer.
+
+Tags are body text in NoteDiscovery, not a field, so `Add tag` is an edit. It is idempotent, and
+tag detection ignores fenced code so a `#` in a shell snippet is not mistaken for one.
+
+Multi-step actions (`Edit`, `Append`, `Add tag`) park a pending intent in `user_data` and claim the
+next message through a handler registered **ahead of** the plain-text search handler, which raises
+`ApplicationHandlerStop` when it acts. Without that ordering, text meant as a note body would also
+be run as a search. `/cancel` clears `user_data`, so it cancels every flow present and future
+without needing a branch per flow.
+
+Deleting asks first and revokes its own confirm token on success, so a double tap cannot act twice.
+
 ### Rendering
 
 Two limits shape `bot/render.py`. MarkdownV2 reserves eighteen characters and rejects the **whole

@@ -33,6 +33,7 @@ from telegram.ext import (
 )
 
 from discoverygram.app.probe import InstanceState
+from discoverygram.bot import browse as browse_handlers
 from discoverygram.bot import search as search_handlers
 from discoverygram.bot.commands import COMMAND_MENU, COMMANDS, unknown_command
 from discoverygram.bot.deps import DEPS_KEY, BotDeps
@@ -115,19 +116,30 @@ def build_application(deps: BotDeps) -> Application:  # type: ignore[type-arg]
     # Group -1: nothing else runs until the caller is known to be allowed.
     application.add_handler(TypeHandler(Update, enforce_allow_list), group=-1)
 
-    for name, handler in {**COMMANDS, **search_handlers.COMMANDS}.items():
+    for name, handler in {
+        **COMMANDS,
+        **search_handlers.COMMANDS,
+        **browse_handlers.COMMANDS,
+    }.items():
         application.add_handler(CommandHandler(name, handler))
 
-    application.add_handler(
-        CallbackQueryHandler(
-            search_handlers.page_callback, pattern=rf"^{search_handlers.PAGE_ACTION}:"
-        )
-    )
+    for action, callback in (
+        (search_handlers.PAGE_ACTION, search_handlers.page_callback),
+        (browse_handlers.NAV_ACTION, browse_handlers.nav_callback),
+        (browse_handlers.NOTE_ACTION, browse_handlers.note_callback),
+        (browse_handlers.ACT_ACTION, browse_handlers.act_callback),
+    ):
+        application.add_handler(CallbackQueryHandler(callback, pattern=rf"^{action}:"))
     application.add_handler(CallbackQueryHandler(_noop_callback, pattern=r"^noop:"))
 
-    # Order matters: the command filter has to be offered the update before the
-    # catch-all text handler, or every `/whatever` would become a search.
+    # Order matters, twice over. The command filter has to be offered the update
+    # before any text handler, or every `/whatever` would become a search. And a
+    # pending edit has to claim the message before the search handler does, or
+    # text meant as a note body would also be run as a query.
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, browse_handlers.pending_input)
+    )
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, search_handlers.text_message)
     )

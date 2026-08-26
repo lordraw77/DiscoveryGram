@@ -21,7 +21,7 @@ from discoverygram.app.search import ResultSet, SearchMode, SearchOutcome, Searc
 from discoverygram.bot.deps import BotDeps, deps_of
 from discoverygram.bot.render import escape_markdown_v2 as esc
 from discoverygram.bot.render import keyboard
-from discoverygram.bot.results import page_keyboard, render_page, render_tag_list
+from discoverygram.bot.results import hit_buttons, page_keyboard, render_page, render_tag_list
 from discoverygram.util.logging import get_logger
 
 log = get_logger(__name__)
@@ -145,13 +145,20 @@ async def page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     results = ResultSet.from_payload(payload)
+
+    # An `h<n>` argument means "open hit n" rather than "turn to page n".
+    if args and args[0].startswith("h"):
+        await _open_hit(update, context, results, args[0][1:])
+        return
+
     page = results.clamp(_page_number(args))
 
     # Still browsing, so keep the results alive.
     await deps.tokens.extend(query.data)
     await query.answer()
 
-    rows = page_keyboard(results, page, f"{PAGE_ACTION}:{token}")
+    base = f"{PAGE_ACTION}:{token}"
+    rows = hit_buttons(results, page, base) + page_keyboard(results, page, base)
     await query.edit_message_text(
         text=render_page(results, page),
         parse_mode=deps.settings.telegram_parse_mode,
@@ -159,6 +166,33 @@ async def page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # absence of pages has to be expressed as no markup at all.
         reply_markup=keyboard(rows) if rows else None,
     )
+
+
+async def _open_hit(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    results: ResultSet,
+    raw_index: str,
+) -> None:
+    """Open the nth hit of a stored result set, by index into the payload."""
+    from discoverygram.bot.browse import send_note
+
+    query = update.callback_query
+    assert query is not None
+
+    if not raw_index.isdigit():
+        await query.answer()
+        return
+
+    index = int(raw_index)
+    if not 1 <= index <= len(results.hits):
+        await query.answer("That result is no longer on this page.", show_alert=True)
+        return
+
+    await query.answer()
+    deps = deps_of(context)
+    note = await deps.notes.get_note(results.hits[index - 1].ref.path)
+    await send_note(update, context, note, reply_to_query=True)
 
 
 def _page_number(args: list[str]) -> int:
@@ -198,7 +232,7 @@ async def _present(
         return
 
     data = await deps.tokens.issue(PAGE_ACTION, results.to_payload())
-    rows = page_keyboard(results, 1, data)
+    rows = hit_buttons(results, 1, data) + page_keyboard(results, 1, data)
     await _reply(update, render_page(results, 1), markup=keyboard(rows) if rows else None)
 
 

@@ -72,6 +72,16 @@ class NoteStore(ABC):
         """Append to an existing note. Rate-limited server-side to 60/minute."""
 
     @abstractmethod
+    async def update_note(self, path: str, content: str) -> NoteRef:
+        """Replace a note's whole body.
+
+        No update endpoint exists — `PATCH` appends only — so this is a
+        read-modify-write over `POST`. The read is not incidental: it makes
+        editing a note that was deleted meanwhile fail as `NotFound` rather than
+        silently re-creating it.
+        """
+
+    @abstractmethod
     async def delete_note(self, path: str) -> None: ...
 
     @abstractmethod

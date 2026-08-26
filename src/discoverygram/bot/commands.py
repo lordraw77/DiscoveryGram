@@ -31,6 +31,12 @@ COMMAND_MENU = [
     BotCommand("find", "Literal, case-sensitive search"),
     BotCommand("tag", "Notes by tag, or list every tag"),
     BotCommand("recent", "Recently changed notes"),
+    BotCommand("browse", "Walk the folder tree"),
+    BotCommand("open", "Open a note by path"),
+    BotCommand("backlinks", "Notes linking to a note"),
+    BotCommand("related", "Notes linked with a note"),
+    BotCommand("move", "Move or rename a note"),
+    BotCommand("folder", "Create, rename, move or delete a folder"),
     BotCommand("status", "Connection, instance and session health"),
     BotCommand("whoami", "Show your Telegram id"),
     BotCommand("cancel", "Abort the current multi-step flow"),
@@ -48,6 +54,19 @@ Your NoteDiscovery vault, from Telegram.
 
 Any plain message you send is treated as a search.
 
+*Reading and navigating*
+/browse [path] — walk the folder tree
+/open <path> — open a note
+/backlinks <path> — notes linking to it
+/related <path> — notes linked with it
+
+Every note carries buttons: Edit, Append, Tag, Backlinks, Related, Path, \
+Raw, Share, Delete.
+
+*Changing things*
+/move <old> <new> — move or rename a note
+/folder new|rename|move|delete — folder operations
+
 *Everything else*
 /help — this list
 /status — connection, instance and session health
@@ -55,8 +74,7 @@ Any plain message you send is treated as a search.
 /cancel — abort whatever multi-step flow you are in
 
 *Coming next*
-Browsing the folder tree, opening notes and creating them land in the \
-following phases.
+Creating notes, and generating them from images, land in a later phase.
 """
 
 

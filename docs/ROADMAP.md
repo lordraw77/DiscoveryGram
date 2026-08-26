@@ -242,29 +242,69 @@ is what "navigable" means in this phase.
 
 ---
 
-## Phase 4 — Navigation
+## Phase 4 — Navigation — **COMPLETE**
 
-**Work**
-1. `/browse` tree navigation with breadcrumb, `⬆ Up`, `🏠 Root`, paginated children — over the
-   **client-derived tree**, since NoteDiscovery exposes no tree endpoint.
-2. Note rendering: title, path, tags, timestamps, body; `paged` and `split` long-note modes;
-   MarkdownV2 escaping and 4096-character chunking.
-3. `/open <path>` direct access; wiki-link `[[...]]` buttons that jump between notes. Also the
-   per-hit **open button on search results**, which phase 3 left out because it needs the note
-   renderer built here.
-4. **`/backlinks <path>`** — notes linking to the current one, via `get_backlinks`; surfaced as a
-   button on every note. **`/related`** using `GET /api/graph` for graph-adjacent notes.
-   Both are capabilities discovered in phase 0 that were not in the original plan.
-5. Per-note action bar: `Edit`, `Append`, `Add tag`, `Copy path`, `Show raw`, `Backlinks`,
-   `Share`, `Delete` (two-step confirmation).
-   - `Edit` is read-modify-write over `POST`; `Append` uses `PATCH` with `add_timestamp`.
-   - `Share` uses `POST /api/share/{path}` and returns the public link in the chat.
-6. Folder operations: create, rename, move, delete (REST-only capabilities).
-7. Seamless transition search → note → parent folder → sibling notes → backlinks.
+**Delivered**
 
-**Definition of Done** — any note in the vault is reachable from `/browse` in a bounded number of
-taps, renders without Telegram formatting errors, and its edit/append/share/delete actions
-round-trip correctly against the live instance.
+| Item | Where |
+|---|---|
+| `NavigationService` — folder views with paging, wiki-link resolution, backlinks, graph-related notes, folder operations | `app/navigation.py` |
+| `NoteService` — append, replace, add tag, move, delete, share | `app/notes.py` |
+| Note rendering: header, tags, timestamps, escaped body, `paged` and `split` long-note modes | `bot/notes.py` |
+| Folder, backlink and related rendering | `bot/notes.py` |
+| `/browse` `/open` `/backlinks` `/related` `/move` `/folder`, the action bar, and the multi-step input flow | `bot/browse.py` |
+| Per-hit open buttons on search results — the item phase 3 deferred | `bot/results.py`, `bot/search.py` |
+| `update_note` promoted onto the `NoteStore` port | `ports/note_store.py` |
+
+**Design decisions worth stating**
+
+- **One token per *view*, not per button.** Every button on a listing or a note carries an argument
+  against the token that view already holds: `nav:<tok>:e3` enters child 3, `nav:<tok>:2` turns the
+  page, `act:<tok>:del` acts on the note. The nine-button action bar therefore costs one session
+  entry, and paging a sixty-item folder costs none at all. Only *entering* a different view issues
+  a new token, because that is genuinely new state.
+- **The same fix was applied retroactively to search.** Phase 3's open buttons were first written
+  to issue a token per hit; a test showed that turning twenty pages then left 100+ session entries.
+  They now carry an index into the stored result set instead.
+- **A listing is rebuilt from its token, not re-derived from the tree.** A page turn should not
+  depend on the vault being reachable, and page 2 must not show a different set of children than
+  the page the reader came from.
+- **Adding a tag is idempotent**, because tags live in the body text rather than a field. Tapping
+  twice must not leave the note tagged twice — NoteDiscovery's index would show both. Detection
+  ignores fenced code, so a `# comment` in a shell snippet is not mistaken for a tag.
+- **Delete asks first, and the confirm button disarms itself.** Its token is revoked as soon as the
+  delete succeeds, so a double tap cannot try again against a note that is already gone.
+- **A broken `[[link]]` is named rather than silently dropped.** A dangling link is a fact about
+  the vault worth surfacing.
+
+**Two bugs the tests caught**
+
+- **The note → folder step was broken** by the token rework: the "⬆ Folder" button pointed at a
+  folder *path*, while the listing callback had come to expect a stored listing. Such a token is
+  now recognised as a pointer and the folder is loaded fresh.
+- **The MarkdownV2 safety assertion was wrong**, not the renderer. It stripped code spans with a
+  regex, so an *escaped* backtick in a note body looked like a code-span opener and a valid message
+  was reported as broken. It is now a single escape-aware pass, which also checks that backticks
+  and markers balance — a stronger check than the one it replaced.
+
+**Verified, not assumed**
+
+- `make check` green: ruff clean, mypy strict clean on 78 files, **517 tests passing at 93%
+  coverage**, plus 21 live tests behind `-m live`.
+- **Every note is proven reachable from the root** by walking its path segment by segment — the
+  Definition of Done, asserted for every note in the fixture vault and, in the live suite, for real
+  ones.
+- **Every reserved MarkdownV2 character is tested individually** inside a note body, so a failure
+  names the character that broke it. A body containing a markdown table, a code fence, links, an
+  image, emoji and accents renders safely.
+- Long notes are proven to page within 4096 characters on **every** page, and escaping is proven to
+  happen before chunking — a boundary between a backslash and its character would break the message.
+- Paging a sixty-item folder eleven times is proven to leave the session store at exactly one entry.
+- Delete is proven not to act before confirmation, and proven not to act twice on a double tap.
+- Folder rename over MCP is proven to explain the gap rather than fail obscurely.
+
+**Not verified** — no live vault or Bot API token was available. The action round-trips
+(`edit → append → tag → share → delete`) are written as live tests and run on `make test-live`.
 
 ---
 
@@ -365,7 +405,7 @@ losing user state, and reports its degradation honestly through `/status` and `/
 
 | Milestone | Phases | Demonstrable outcome |
 |---|---|---|
-| **M1 — Read-only bot** | 0–4 | Search, browse and read the whole vault from Telegram |
+| **M1 — Read-only bot** ✅ | 0–4 | Search, browse and read the whole vault from Telegram |
 | **M2 — Resilient LLM layer** | 5 | Multi-provider chat and vision with retry and failover |
 | **M3 — Full note authoring** | 6 | Image-to-note with generated title, preview and save |
 | **M4 — Production release** | 7–8 | Hardened, containerised, fully documented v1.0 |
@@ -383,7 +423,7 @@ early cut-line if scope needs trimming.
 | Search disabled server-side | `/search` silently useless | Probed at startup via `/api/config` (`searchEnabled`); commands disabled with an explicit message |
 | Minimum query length is not exposed by the API | Short queries look broken | Carried as `SEARCH_MIN_QUERY_LENGTH` (2) and enforced client-side |
 | ~~Unbounded `/api/search` with no default limit~~ | — | **Closed in phase 3.** Explicit `limit` enforced in the adapter and asserted in the service; a full page is reported as truncated so the user knows results were cut |
-| Telegram formatting and size limits | Broken rendering on real notes | Centralised renderer built in phase 2, tested against pathological bodies. Every reply asserted MarkdownV2-safe — this already caught an unsendable `/status` |
+| Telegram formatting and size limits | Broken rendering on real notes | Centralised renderer, every reply asserted MarkdownV2-safe against every reserved character individually, tables, fences and 4096-character boundaries. Has already caught an unsendable `/status` and a faulty assertion |
 | ~~`callback_data` 64-byte limit~~ | — | **Closed in phase 2.** Opaque token plus server-side session store, proven against a path three times the limit |
 | LLM cost drift | Unbounded spend | Per-user daily caps, usage accounting, local `ollama` as a chain terminator |
 | Third-party libraries logging our secrets | Token in the logs | Found in phase 2: python-telegram-bot logs the Bot API URL. Literal secret values are scrubbed from both logging pipelines, verified at `LOG_LEVEL=DEBUG` |
@@ -391,7 +431,8 @@ early cut-line if scope needs trimming.
 
 ## Open items
 
-Phases 0 to 3 are complete and were built without live credentials. What is still needed:
+Phases 0 to 4 are complete — milestone **M1, the read-only bot**, is finished — and were built
+without live credentials. What is still needed:
 
 1. `NOTEDISCOVERY_URL` (with port) and the API key of the live instance — if the instance runs
    unauthenticated, say so, the adapter supports both.

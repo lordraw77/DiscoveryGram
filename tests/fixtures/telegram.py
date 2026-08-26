@@ -8,7 +8,6 @@ is the one thing that would otherwise make a network call.
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -121,24 +120,39 @@ def assert_markdown_v2_safe(text: str) -> None:
 
     One unescaped reserved character makes the Bot API reject the **whole**
     message with a 400, so this is asserted on every reply the bot composes.
-    Content inside a code span is exempt — only a backtick is special there —
-    and the two markers we emit on purpose must be balanced.
-    """
-    without_code = re.sub(r"`[^`]*`", "", text)
 
+    The scan is a single escape-aware pass rather than a regex sweep: an
+    *escaped* backtick does not open a code span, and treating it as one would
+    make a perfectly valid body look broken. Inside a code span only the
+    backtick is special; outside one, every reserved character must be escaped
+    and the markers we emit on purpose must balance.
+    """
     counts = dict.fromkeys(_MARKERS, 0)
+    backticks = 0
+    in_code = False
+
     index = 0
-    while index < len(without_code):
-        char = without_code[index]
+    while index < len(text):
+        char = text[index]
+
         if char == "\\":
             index += 2  # An escape covers the character after it.
             continue
-        if char in _MARKERS:
+
+        if char == "`":
+            backticks += 1
+            in_code = not in_code
+        elif in_code:
+            pass  # Only a backtick is special inside a code span.
+        elif char in _MARKERS:
             counts[char] += 1
         elif char in MARKDOWN_V2_RESERVED:
-            raise AssertionError(f"unescaped {char!r} at {index} in {without_code!r}")
+            raise AssertionError(f"unescaped {char!r} at {index} in {text!r}")
+
         index += 1
 
+    if backticks % 2:
+        raise AssertionError(f"unbalanced backtick ({backticks} found) in {text!r}")
     for marker, count in counts.items():
         if count % 2:
-            raise AssertionError(f"unbalanced {marker!r} ({count} occurrences) in {without_code!r}")
+            raise AssertionError(f"unbalanced {marker!r} ({count} occurrences) in {text!r}")

@@ -130,6 +130,23 @@ def page_keyboard(results: ResultSet, page: int, base_callback: str) -> list[lis
     ]
 
 
+def hit_buttons(results: ResultSet, page: int, base_callback: str) -> list[list[tuple[str, str]]]:
+    """One `Open` button per hit on the current page.
+
+    The buttons carry an **index into the stored result set**, not a path, so
+    they reuse the token pagination already issued. A token per hit would mean
+    five new session entries on every page turn — bounded by the TTL, but
+    growing with nothing but browsing.
+    """
+    rows: list[list[tuple[str, str]]] = []
+    offset = (results.clamp(page) - 1) * results.page_size
+    for position, hit in enumerate(results.page(page), start=1):
+        index = offset + position
+        label = f"{index}. {truncate(hit.ref.title or hit.ref.path, 30)}"
+        rows.append([(label, CallbackTokens.with_args(base_callback, f"h{index}"))])
+    return rows
+
+
 def render_tag_list(counts: dict[str, int], *, limit: int = 40) -> str:
     """`/tag` with no argument: what tags exist and how used they are."""
     if not counts:

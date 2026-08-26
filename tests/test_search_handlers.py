@@ -23,7 +23,14 @@ from discoverygram.bot.search import (
 )
 from discoverygram.bot.tokens import CallbackTokens
 from discoverygram.config import Settings
-from discoverygram.ports.model import InstanceConfig, NoteRef, SearchHit, SearchMatch
+from discoverygram.ports.model import (
+    InstanceConfig,
+    Note,
+    NoteRef,
+    SearchHit,
+    SearchMatch,
+    TreeNode,
+)
 from tests.fixtures.telegram import (
     FakeBot,
     FakeContext,
@@ -71,6 +78,12 @@ class StubNoteStore:
 
     async def list_tags(self) -> dict[str, int]:
         return dict(self.tags_map)
+
+    async def get_note(self, path: str, *, include_backlinks: bool = True) -> Note:
+        return Note(ref=NoteRef.from_path(path), content="body", lines=1)
+
+    async def get_tree(self, *, refresh: bool = False) -> TreeNode:
+        return TreeNode(path="", name="")
 
 
 @pytest.fixture
@@ -123,15 +136,65 @@ async def test_search_sends_the_first_page_with_buttons(
     assert_markdown_v2_safe(bot.last_text)
 
 
-async def test_a_single_page_of_results_gets_no_buttons(
+async def test_a_single_page_of_results_gets_no_pagination_row(
     settings: Settings, bot: FakeBot, sessions: MemorySessionStore
 ) -> None:
+    """One open button, no arrows — there is nowhere to page to."""
     notes = StubNoteStore(hits=[hit(0)])
     context = make_context(settings, bot, sessions, notes=notes, args=["docker"])
 
     await search_command(make_update(bot), as_context(context))
 
-    assert bot.sent[-1]["reply_markup"] is None
+    markup = bot.sent[-1]["reply_markup"]
+    labels = [button.text for row in markup.inline_keyboard for button in row]
+    assert labels == ["1. Note 0"]
+
+
+async def test_every_hit_gets_an_open_button(
+    settings: Settings, bot: FakeBot, sessions: MemorySessionStore
+) -> None:
+    notes = StubNoteStore(hits=[hit(index) for index in range(3)])
+    context = make_context(settings, bot, sessions, notes=notes, args=["docker"])
+
+    await search_command(make_update(bot), as_context(context))
+
+    markup = bot.sent[-1]["reply_markup"]
+    labels = [button.text for row in markup.inline_keyboard for button in row]
+    assert labels == ["1. Note 0", "2. Note 1", "3. Note 2"]
+
+
+async def test_open_buttons_reuse_the_result_set_token(
+    settings: Settings, bot: FakeBot, sessions: MemorySessionStore
+) -> None:
+    """A token per hit would mean five new session entries on every page turn."""
+    notes = StubNoteStore(hits=[hit(index) for index in range(12)])
+    context = make_context(settings, bot, sessions, notes=notes, args=["docker"])
+
+    await search_command(make_update(bot), as_context(context))
+
+    tokens = {
+        CallbackTokens.split(button.callback_data)[1]
+        for row in bot.sent[-1]["reply_markup"].inline_keyboard
+        for button in row
+        if button.callback_data and not button.callback_data.startswith("noop")
+    }
+    assert len(tokens) == 1
+    assert len(sessions) == 1
+
+
+async def test_tapping_a_hit_opens_that_note(
+    settings: Settings, bot: FakeBot, sessions: MemorySessionStore
+) -> None:
+    notes = StubNoteStore(hits=[hit(index) for index in range(3)])
+    context = make_context(settings, bot, sessions, notes=notes, args=["docker"])
+    await search_command(make_update(bot), as_context(context))
+    open_button = bot.sent[-1]["reply_markup"].inline_keyboard[1][0]
+
+    await page_callback(
+        make_callback_update(bot, data=open_button.callback_data), as_context(context)
+    )
+
+    assert r"Projects/n1\.md" in bot.last_text
 
 
 async def test_search_without_a_query_shows_usage(
@@ -300,6 +363,7 @@ async def test_twenty_page_turns_leak_no_session_state(
     """The Definition of Done, asserted against the store rather than assumed."""
     context, forward = await issue_results(settings, bot, sessions, 200)
     before = len(sessions)
+    assert before == 1
 
     data = forward
     for _ in range(25):
