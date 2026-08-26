@@ -8,6 +8,7 @@ is the one thing that would otherwise make a network call.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -24,7 +25,9 @@ class FakeBot:
 
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
+        self.edited: list[dict[str, Any]] = []
         self.answered: list[str] = []
+        self.answered_with: list[str] = []
         self.commands: list[Any] = []
         self.fail_with: Exception | None = None
 
@@ -35,6 +38,10 @@ class FakeBot:
 
     async def answer_callback_query(self, callback_query_id: str, **kwargs: Any) -> None:
         self.answered.append(callback_query_id)
+        self.answered_with.append(str(kwargs.get("text", "")))
+
+    async def edit_message_text(self, **kwargs: Any) -> None:
+        self.edited.append(kwargs)
 
     async def set_my_commands(self, commands: Any) -> None:
         self.commands = list(commands)
@@ -54,6 +61,7 @@ class FakeContext:
     def __init__(self, bot: FakeBot, bot_data: dict[str, Any]) -> None:
         self.bot = bot
         self.bot_data = bot_data
+        self.args: list[str] = []
         self.user_data: dict[Any, Any] = {}
         self.chat_data: dict[Any, Any] = {}
         self.error: BaseException | None = None
@@ -98,3 +106,39 @@ def make_callback_update(bot: FakeBot, *, data: str, user_id: int = ALLOWED_USER
     )
     query.set_bot(bot)  # type: ignore[arg-type]
     return Update(update_id=2, callback_query=query)
+
+
+# --- MarkdownV2 safety ----------------------------------------------------
+
+# Everything MarkdownV2 reserves, per the Bot API formatting reference.
+MARKDOWN_V2_RESERVED = set("_*[]()~`>#+-=|{}.!")
+# The two we emit deliberately as markup: *bold* and _italic_.
+_MARKERS = "*_"
+
+
+def assert_markdown_v2_safe(text: str) -> None:
+    """Fail unless Telegram would accept `text` as MarkdownV2.
+
+    One unescaped reserved character makes the Bot API reject the **whole**
+    message with a 400, so this is asserted on every reply the bot composes.
+    Content inside a code span is exempt — only a backtick is special there —
+    and the two markers we emit on purpose must be balanced.
+    """
+    without_code = re.sub(r"`[^`]*`", "", text)
+
+    counts = dict.fromkeys(_MARKERS, 0)
+    index = 0
+    while index < len(without_code):
+        char = without_code[index]
+        if char == "\\":
+            index += 2  # An escape covers the character after it.
+            continue
+        if char in _MARKERS:
+            counts[char] += 1
+        elif char in MARKDOWN_V2_RESERVED:
+            raise AssertionError(f"unescaped {char!r} at {index} in {without_code!r}")
+        index += 1
+
+    for marker, count in counts.items():
+        if count % 2:
+            raise AssertionError(f"unbalanced {marker!r} ({count} occurrences) in {without_code!r}")

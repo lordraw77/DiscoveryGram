@@ -27,6 +27,10 @@ log = get_logger(__name__)
 COMMAND_MENU = [
     BotCommand("start", "What this bot does"),
     BotCommand("help", "List the available commands"),
+    BotCommand("search", "Full-text search across the vault"),
+    BotCommand("find", "Literal, case-sensitive search"),
+    BotCommand("tag", "Notes by tag, or list every tag"),
+    BotCommand("recent", "Recently changed notes"),
     BotCommand("status", "Connection, instance and session health"),
     BotCommand("whoami", "Show your Telegram id"),
     BotCommand("cancel", "Abort the current multi-step flow"),
@@ -36,15 +40,23 @@ HELP_TEXT = """*DiscoveryGram*
 
 Your NoteDiscovery vault, from Telegram.
 
-*Available now*
+*Finding notes*
+/search <words> — full-text search
+/find <text> — literal, case-sensitive match
+/tag <name> — notes carrying a tag; /tag alone lists them
+/recent [days] — recently changed notes
+
+Any plain message you send is treated as a search.
+
+*Everything else*
 /help — this list
 /status — connection, instance and session health
 /whoami — your Telegram id and chat id
 /cancel — abort whatever multi-step flow you are in
 
 *Coming next*
-Search, browse and note creation land in the following phases. \
-This build is the bot core: access control, sessions and health.
+Browsing the folder tree, opening notes and creating them land in the \
+following phases.
 """
 
 

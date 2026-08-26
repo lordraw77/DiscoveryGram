@@ -6,8 +6,6 @@ survive the Bot API — an unescaped reserved character is a 400, not a typo.
 
 from __future__ import annotations
 
-import re
-
 import pytest
 
 from discoverygram.adapters.session import MemorySessionStore
@@ -21,14 +19,27 @@ from discoverygram.bot.commands import (
     unknown_command,
     whoami,
 )
+from discoverygram.bot.commands import (
+    COMMANDS as CORE_COMMANDS,
+)
 from discoverygram.bot.deps import DEPS_KEY, BotDeps
+from discoverygram.bot.search import COMMANDS as SEARCH_COMMANDS
 from discoverygram.bot.tokens import CallbackTokens
 from discoverygram.config import Settings
 from discoverygram.ports.errors import Unavailable
 from discoverygram.ports.model import InstanceConfig, VaultStats
-from tests.fixtures.telegram import ALLOWED_USER_ID, FakeBot, FakeContext, as_context, make_update
+from tests.fixtures.telegram import (
+    ALLOWED_USER_ID,
+    FakeBot,
+    FakeContext,
+    as_context,
+    assert_markdown_v2_safe,
+    make_update,
+)
 
-RESERVED = set("_*[]()~`>#+-=|{}.!")
+# Every command the bot actually answers, from the two registries themselves —
+# so a new command cannot be advertised without also being handled.
+ALL_COMMANDS = {**CORE_COMMANDS, **SEARCH_COMMANDS}
 
 
 class StubNoteStore:
@@ -43,20 +54,6 @@ class StubNoteStore:
         if self._stats is None:
             raise Unavailable("no stats")
         return self._stats
-
-
-def assert_markdown_v2_safe(text: str) -> None:
-    """Every reserved character must be escaped or inside a code span."""
-    without_code = re.sub(r"`[^`]*`", "", text)
-    index = 0
-    while index < len(without_code):
-        char = without_code[index]
-        if char == "\\":
-            index += 2
-            continue
-        if char in RESERVED and char != "*":
-            raise AssertionError(f"unescaped {char!r} at {index} in {without_code!r}")
-        index += 1
 
 
 @pytest.fixture
@@ -94,20 +91,26 @@ async def test_help_lists_only_commands_that_exist(settings: Settings, bot: Fake
     await help_command(make_update(bot), as_context(make_context(settings, bot)))
 
     text = bot.last_text
-    for command in ("/help", "/status", "/whoami", "/cancel"):
-        assert command in text
-    assert "/search" not in text
+    for command in ALL_COMMANDS:
+        if command == "start":
+            continue  # Telegram sends /start itself; the help text need not.
+        assert f"/{command}" in text, command
+    for unimplemented in ("/browse", "/open", "/new", "/quick", "/summarize"):
+        assert unimplemented not in text
     assert_markdown_v2_safe(text)
 
 
-async def test_the_command_menu_matches_what_help_advertises() -> None:
-    assert {command.command for command in COMMAND_MENU} == {
-        "start",
-        "help",
-        "status",
-        "whoami",
-        "cancel",
-    }
+async def test_every_advertised_command_has_a_handler() -> None:
+    """The BotFather menu is a promise; an entry with no handler breaks it."""
+    advertised = {command.command for command in COMMAND_MENU}
+
+    assert advertised <= set(ALL_COMMANDS)
+
+
+async def test_the_search_commands_are_advertised() -> None:
+    advertised = {command.command for command in COMMAND_MENU}
+
+    assert {"search", "find", "tag", "recent"} <= advertised
 
 
 async def test_whoami_reports_the_ids_needed_for_the_allow_list(

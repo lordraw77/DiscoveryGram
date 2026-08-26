@@ -192,6 +192,35 @@ callback data reveals nothing about another's or about the vault.
 `extend` refreshes a token still in use, so paging does not expire mid-flow because page one was
 issued an hour ago.
 
+### Search and pagination
+
+The four search modes live in `app/search.py` and know nothing about Telegram. Only one of them is
+a NoteDiscovery feature: full text. Literal search filters the same call case-sensitively, tag
+search uses `/api/tags/{tag}`, and recent is derived from the listing's timestamps over REST.
+
+A mode that cannot run returns an outcome carrying a **notice** rather than raising — "search is
+disabled on this instance" is an answer, not an error. The startup probe answers that cheaply, but
+a `403` at call time is believed over it, because an instance can be reconfigured while we run.
+
+Pagination stores the **whole result set once**, under a single callback token, and each page
+button carries its number in the callback data:
+
+```
+page:9f3a1c2b7d4e:3
+^^^^ ^^^^^^^^^^^^ ^
+action  token   page
+```
+
+Twenty page turns therefore create one session entry rather than forty, and a page turn costs no
+vault read — which also means page 2 cannot disagree with page 1 because a note changed in between.
+The token's lifetime is refreshed on each turn, so a long browse does not expire.
+
+Snippets come from the API, HTML-escaped and wrapped in `<mark>`; phase 1 strips that markup, and
+`bot/results.py` re-applies highlighting in Telegram's syntax. The order matters: the snippet is
+escaped **first**, the term is escaped the same way, and occurrences are then found in the escaped
+text. Marking up first would let the escaper mangle its own markers. The term is regex-escaped too,
+because it comes from the vault — `a.b` must not match `axb`.
+
 ### Rendering
 
 Two limits shape `bot/render.py`. MarkdownV2 reserves eighteen characters and rejects the **whole

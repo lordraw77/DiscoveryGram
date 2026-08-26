@@ -99,6 +99,7 @@ a default: leaving `<P>_VISION_MODELS` empty removes it from the vision ladder o
 | `SESSION_BACKEND` | `memory` | `memory` (single replica, lost on restart) or `redis` (survives restarts, shared across replicas — keeps existing keyboards working across a deploy). Redis needs the optional extra: `uv sync --extra redis` |
 | `REDIS_URL` | empty | Required when the backend is `redis` |
 | `SESSION_TTL_S` | `3600` | Lifetime of pagination state, drafts and **callback tokens**. A button older than this stops working, so lower it only deliberately |
+| `RECENT_DEFAULT_DAYS` | `7` | Default window for `/recent`. Override per call with `/recent 30` |
 | `RESULTS_PAGE_SIZE` | `5` | Search hits per page |
 | `TREE_PAGE_SIZE` | `10` | Tree entries per page |
 | `LONG_NOTE_MODE` | `paged` | `paged` or `split` |

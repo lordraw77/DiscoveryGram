@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     redis_url: str = ""
     session_ttl_s: int = Field(default=3600, gt=0)
     results_page_size: int = Field(default=5, gt=0, le=20)
+    # Default window for /recent. NoteDiscovery has no recent endpoint over REST,
+    # so this bounds a client-side filter rather than a server query.
+    recent_default_days: int = Field(default=7, gt=0)
     tree_page_size: int = Field(default=10, gt=0, le=50)
     long_note_mode: Literal["paged", "split"] = "paged"
     max_upload_mb: int = Field(default=20, gt=0, le=20)

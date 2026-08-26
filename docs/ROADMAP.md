@@ -185,26 +185,60 @@ The wiring, lifecycle and rendering are tested; the first real conversation is n
 
 ---
 
-## Phase 3 — Search
+## Phase 3 — Search — **COMPLETE**
 
 Shaped by the contract: NoteDiscovery offers **one** search mode, no scores, an optional
 server-side disable and a minimum query length. Modes beyond full-text are built client-side.
 
-**Work**
-1. Use cases: full-text search (`GET /api/search`), literal search (client-side filter over the
-   same call), tag search (`GET /api/tags/{tag}`), tag listing, recent notes
-   (`get_recent_notes(days, limit)`).
-2. `/search`, `/find`, `/tag`, `/recent`, plus plain-text-message search.
-3. Client-side ranking, already built in phase 1. Snippets come from the API but arrive as HTML
-   and are stripped in `adapters/ranking.py`; phase 3 re-highlights the term in Telegram's syntax.
-4. Paginated rendering with `◀ / ▶`; cursor state in the session store, TTL-bounded. Always send
-   an explicit `limit` — the endpoint has no server-side cap.
-5. Handle the real edge cases: query below the minimum length, empty `q`, search disabled (403),
-   plugin-replaced result sets.
+**Delivered**
 
-**Definition of Done** — all four search modes return correct, paginated, navigable results against
-the live instance; a query below the minimum length and a search-disabled instance both produce a
-clear message rather than an error; pagination survives 20+ page turns without state leaks.
+| Item | Where |
+|---|---|
+| `SearchService` — full text, literal, tag, recent, tag listing. Degraded modes return a `notice`, not an exception | `app/search.py` |
+| `ResultSet` — page arithmetic, clamping, and JSON round-tripping through the session store | `app/search.py` |
+| Result rendering: numbered hits, folder, snippets, term highlighting, per-mode empty and header text | `bot/results.py` |
+| `/search` `/find` `/tag` `/recent`, plain-message search, and the pagination callback | `bot/search.py` |
+| Callback data carrying arguments (`page:<token>:<n>`), so one stored result set serves every page | `bot/tokens.py` |
+| Shared `assert_markdown_v2_safe` helper, applied to every rendered reply | `tests/fixtures/telegram.py` |
+
+**Design decisions worth stating**
+
+- **The whole result set is stored once, and page numbers ride in the callback data.** The obvious
+  alternative — a token per page button — would create forty session entries over twenty page
+  turns. The alternative of re-running the query per page would be worse still: page 2 could then
+  disagree with page 1 because a note changed in between. One entry, no vault reads, stable paging.
+  The token's TTL is refreshed on every turn, so a long browse does not expire because page one was
+  issued an hour ago.
+- **Highlighting happens after escaping, not before.** The term is escaped the same way the snippet
+  was, so the two still line up, and the occurrences found in the *escaped* text are wrapped in
+  bold. Marking up first would let the escaper mangle the markers it had just inserted. The term
+  also comes from the vault, so it is regex-escaped: `a.b` must not match `axb`.
+- **A 403 at call time beats the startup probe.** An instance can be reconfigured while the bot
+  runs, so `Forbidden` from `/api/search` is believed over the cached probe result.
+- **Tag and recent do not use `/api/search`,** so they keep working on a search-disabled instance —
+  worth knowing when they are the only modes left.
+- **`DEFAULT_TEXT_ACTION=quick` is refused with an explanation** rather than silently searching.
+  A message the user meant to capture must not quietly become a query; quick capture lands in
+  phase 6.
+
+**Verified, not assumed**
+
+- `make check` green: ruff clean, mypy strict clean on 70 files, **384 tests passing at 93%
+  coverage**, plus 16 live tests behind `-m live`.
+- **Twenty-five page turns are asserted to leave exactly one session entry** — the Definition of
+  Done, checked against the store rather than assumed.
+- Page slices are proven to cover the result set with no gaps and no overlap, and an out-of-range
+  or non-numeric page from a stale button is proven to clamp rather than crash.
+- Every page button is proven to stay within Telegram's 64-byte limit at high page numbers.
+- Every rendered reply is asserted MarkdownV2-safe, including balanced `*` and `_`, against titles
+  like `Q1 2026 — costs (draft) [v2]!` and 400-character snippets.
+- Five hits with long titles and long snippets are proven to fit one 4096-character message.
+- A too-short query is proven never to reach the vault, and every search is proven to carry an
+  explicit `limit`.
+
+**Not delivered here, deliberately** — results carry no per-hit *open* button. Opening a note needs
+the note renderer, which is phase 4's first item; adding it now would be doing phase 4. Pagination
+is what "navigable" means in this phase.
 
 ---
 
@@ -215,7 +249,9 @@ clear message rather than an error; pagination survives 20+ page turns without s
    **client-derived tree**, since NoteDiscovery exposes no tree endpoint.
 2. Note rendering: title, path, tags, timestamps, body; `paged` and `split` long-note modes;
    MarkdownV2 escaping and 4096-character chunking.
-3. `/open <path>` direct access; wiki-link `[[...]]` buttons that jump between notes.
+3. `/open <path>` direct access; wiki-link `[[...]]` buttons that jump between notes. Also the
+   per-hit **open button on search results**, which phase 3 left out because it needs the note
+   renderer built here.
 4. **`/backlinks <path>`** — notes linking to the current one, via `get_backlinks`; surfaced as a
    button on every note. **`/related`** using `GET /api/graph` for graph-adjacent notes.
    Both are capabilities discovered in phase 0 that were not in the original plan.
@@ -346,7 +382,7 @@ early cut-line if scope needs trimming.
 | NoteDiscovery upgrade changes the contract | Silent breakage | Contract doc is version-stamped (0.31.3); startup logs the instance version and warns on mismatch; contract tests run against fixtures |
 | Search disabled server-side | `/search` silently useless | Probed at startup via `/api/config` (`searchEnabled`); commands disabled with an explicit message |
 | Minimum query length is not exposed by the API | Short queries look broken | Carried as `SEARCH_MIN_QUERY_LENGTH` (2) and enforced client-side |
-| Unbounded `/api/search` with no default limit | Whole-vault response | Explicit `limit` on every call, enforced in the adapter |
+| ~~Unbounded `/api/search` with no default limit~~ | — | **Closed in phase 3.** Explicit `limit` enforced in the adapter and asserted in the service; a full page is reported as truncated so the user knows results were cut |
 | Telegram formatting and size limits | Broken rendering on real notes | Centralised renderer built in phase 2, tested against pathological bodies. Every reply asserted MarkdownV2-safe — this already caught an unsendable `/status` |
 | ~~`callback_data` 64-byte limit~~ | — | **Closed in phase 2.** Opaque token plus server-side session store, proven against a path three times the limit |
 | LLM cost drift | Unbounded spend | Per-user daily caps, usage accounting, local `ollama` as a chain terminator |
@@ -355,7 +391,7 @@ early cut-line if scope needs trimming.
 
 ## Open items
 
-Phases 0, 1 and 2 are complete and were built without live credentials. What is still needed:
+Phases 0 to 3 are complete and were built without live credentials. What is still needed:
 
 1. `NOTEDISCOVERY_URL` (with port) and the API key of the live instance — if the instance runs
    unauthenticated, say so, the adapter supports both.

@@ -33,8 +33,12 @@ rate-limit pacing) and the startup probe.
 
 **Phase 2 complete.** The bot core runs: the allow-list, the command router (`/start`, `/help`,
 `/whoami`, `/cancel`, `/status`), the session store, the callback-token mechanism, the message
-renderer and the global error handler. `make check` is green at 93% coverage across 305 tests,
-with an opt-in live suite (`make test-live`) waiting on credentials. Phase 3 (search) is next.
+renderer and the global error handler.
+
+**Phase 3 complete.** All four search modes — full text, literal, tag and recent — with client-side
+ranking, term highlighting and pagination that costs no vault read and leaves one session entry
+however long the browse. `make check` is green at 93% coverage across 384 tests, with an opt-in
+live suite (`make test-live`) waiting on credentials. Phase 4 (navigation) is next.
 
 The version now comes from the git tag rather than a literal — see
 [CONFIGURATION.md](CONFIGURATION.md#versioning).

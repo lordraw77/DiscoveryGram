@@ -27,18 +27,25 @@ disabled cleanly rather than failing per request. Details in
   would never fit in Telegram's 64-byte `callback_data`.
 - Friendly errors: one actionable sentence in the chat, the full detail in the logs.
 
-## 3. Search (P3)
+## 3. Search (P3) — **shipped**
 
 | Command | Behaviour |
 |---|---|
 | `/search <query>` | Content search via `GET /api/search`. Paginated hit list, **client-side ranking** — the API returns no relevance score. Snippets come from the API but arrive as HTML and are stripped before rendering. |
 | `/find <term>` | Literal match. Implemented as a client-side filter over `/search`, because NoteDiscovery has no exact-search mode. |
 | `/tag <tag>` | All notes carrying a tag. `/tag` with no argument lists available tags. |
-| `/recent` | Most recently modified notes. |
-| free text | A plain message that is not a command runs a full-text search (configurable via `DEFAULT_TEXT_ACTION`). |
+| `/recent [days]` | Notes modified in the last `RECENT_DEFAULT_DAYS`, or a window you give. No REST endpoint exists; derived from the listing's timestamps. |
+| free text | A plain message that is not a command runs a full-text search. With `DEFAULT_TEXT_ACTION=quick` it is refused with an explanation instead — a message meant as a note must not quietly become a query. |
 
-Result UX: 5 hits per page (`RESULTS_PAGE_SIZE`), `◀ / ▶` pagination buttons, one button per hit
-opening the note, plus a `Refine` button that hands the query to the LLM to suggest narrower terms.
+Result UX: 5 hits per page (`RESULTS_PAGE_SIZE`), `◀ / ▶` pagination, numbered hits showing title,
+folder and up to two snippets with the term highlighted. Turning pages costs no vault read and
+leaves exactly one session entry, however long the browse.
+
+Degraded paths are answers, not errors: a query below the instance's minimum length says how short
+it was, a search-disabled instance says so, and an empty result set says what was looked for.
+`/tag` and `/recent` need no search endpoint, so they keep working when search is disabled.
+
+Per-hit *open* buttons arrive with the note renderer in P4.
 
 ## 4. Navigation (P4)
 

@@ -64,9 +64,23 @@ class CallbackTokens:
         return f"{action}{SEPARATOR}{token}"
 
     @staticmethod
-    def parse(callback_data: str) -> tuple[str, str]:
+    def split(callback_data: str) -> tuple[str, str, list[str]]:
+        """Split callback data into `(action, token, args)`.
+
+        Trailing arguments let one stored payload serve many buttons. Pagination
+        relies on it: the result set is stored once and every page button reads
+        `page:<token>:<n>`, so turning twenty pages creates one session entry
+        rather than forty.
+        """
+        parts = callback_data.split(SEPARATOR)
+        action = parts[0] if parts else ""
+        token = parts[1] if len(parts) > 1 else ""
+        return action, token, parts[2:]
+
+    @classmethod
+    def parse(cls, callback_data: str) -> tuple[str, str]:
         """Split callback data into `(action, token)`; the token may be empty."""
-        action, _, token = callback_data.partition(SEPARATOR)
+        action, token, _ = cls.split(callback_data)
         return action, token
 
     async def resolve(self, callback_data: str) -> SessionValue | None:
@@ -75,6 +89,20 @@ class CallbackTokens:
         if not token:
             return None
         return await self._store.get(self._key(token))
+
+    @staticmethod
+    def with_args(callback_data: str, *args: object) -> str:
+        """Append arguments to an issued button, e.g. a page number.
+
+        Raises rather than producing data Telegram will reject, so the failure
+        lands where the bug is instead of as a 400 in front of the user.
+        """
+        extended = SEPARATOR.join([callback_data, *(str(arg) for arg in args)])
+        if not fits_in_callback_data(extended):
+            raise CallbackDataTooLongError(
+                f"{extended!r} exceeds Telegram's {CALLBACK_DATA_MAX_BYTES}-byte limit"
+            )
+        return extended
 
     async def revoke(self, callback_data: str) -> None:
         """Invalidate a one-shot button, so a double tap cannot act twice."""

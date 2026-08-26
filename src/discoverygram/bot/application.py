@@ -33,6 +33,7 @@ from telegram.ext import (
 )
 
 from discoverygram.app.probe import InstanceState
+from discoverygram.bot import search as search_handlers
 from discoverygram.bot.commands import COMMAND_MENU, COMMANDS, unknown_command
 from discoverygram.bot.deps import DEPS_KEY, BotDeps
 from discoverygram.bot.errors import handle_error
@@ -114,11 +115,22 @@ def build_application(deps: BotDeps) -> Application:  # type: ignore[type-arg]
     # Group -1: nothing else runs until the caller is known to be allowed.
     application.add_handler(TypeHandler(Update, enforce_allow_list), group=-1)
 
-    for name, handler in COMMANDS.items():
+    for name, handler in {**COMMANDS, **search_handlers.COMMANDS}.items():
         application.add_handler(CommandHandler(name, handler))
 
+    application.add_handler(
+        CallbackQueryHandler(
+            search_handlers.page_callback, pattern=rf"^{search_handlers.PAGE_ACTION}:"
+        )
+    )
     application.add_handler(CallbackQueryHandler(_noop_callback, pattern=r"^noop:"))
+
+    # Order matters: the command filter has to be offered the update before the
+    # catch-all text handler, or every `/whatever` would become a search.
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, search_handlers.text_message)
+    )
 
     application.add_error_handler(handle_error)
     return application

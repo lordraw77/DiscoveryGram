@@ -4,9 +4,9 @@ Make a [NoteDiscovery](https://github.com/gamosoft/NoteDiscovery) vault fully us
 **Telegram**: search it, navigate it, read it, and create notes in it — including LLM-assisted
 creation from images.
 
-> **Status: phase 2 complete.** The bot runs: an allow-listed user gets `/start`, `/help`,
-> `/whoami`, `/cancel` and `/status` over a NoteDiscovery integration layer with REST and MCP
-> adapters. Search, browse and note creation land in phases 3, 4 and 6.
+> **Status: phase 3 complete.** The bot searches: `/search`, `/find`, `/tag` and `/recent` return
+> paginated, highlighted results from your vault, over a NoteDiscovery integration layer with REST
+> and MCP adapters. Browsing the folder tree and creating notes land in phases 4 and 6.
 > See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Quick start

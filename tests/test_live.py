@@ -20,7 +20,8 @@ from collections.abc import AsyncIterator
 import pytest
 
 from discoverygram.adapters.rest import RestNoteStore
-from discoverygram.app.probe import probe_instance
+from discoverygram.app.probe import InstanceState, probe_instance
+from discoverygram.app.search import SearchService
 from discoverygram.config import Settings
 from discoverygram.ports.errors import Forbidden, NotFound
 
@@ -191,3 +192,59 @@ async def test_upload_media_returns_a_referenceable_path(live_store: RestNoteSto
     )
 
     assert upload.path
+
+
+# --- Phase 3: the four search modes ---------------------------------------
+
+
+def live_service(store: RestNoteStore, state: InstanceState) -> SearchService:
+    return SearchService(store, Settings(), state)  # type: ignore[call-arg]
+
+
+async def test_every_search_mode_answers(live_store: RestNoteStore) -> None:
+    """The phase 3 Definition of Done, against the real vault."""
+    state = await probe_instance(live_store)
+    service = live_service(live_store, state)
+
+    tags = await service.tags()
+    assert isinstance(tags, dict)
+
+    recent = await service.recent(days=3650)
+    assert recent.ran
+
+    if tags:
+        by_tag = await service.by_tag(next(iter(tags)))
+        assert by_tag.ran
+        assert not by_tag.is_empty
+
+    if not state.search_available:
+        pytest.skip("search is disabled on this instance")
+
+    marker = f"discoverygram{uuid.uuid4().hex[:10]}"
+    await live_store.create_note(f"{SCRATCH_FOLDER}/search-modes.md", f"marker {marker}")
+
+    full_text = await service.full_text(marker)
+    literal = await service.literal(marker)
+
+    assert not full_text.is_empty
+    assert not literal.is_empty
+
+
+async def test_a_short_query_degrades_with_a_notice_not_an_error(
+    live_store: RestNoteStore,
+) -> None:
+    outcome = await live_service(live_store, await probe_instance(live_store)).full_text("a")
+
+    assert not outcome.ran
+    assert "too short" in outcome.notice
+
+
+async def test_search_disabled_degrades_with_a_notice(live_store: RestNoteStore) -> None:
+    state = await probe_instance(live_store)
+    if state.search_available:
+        pytest.skip("search is enabled on this instance")
+
+    outcome = await live_service(live_store, state).full_text("anything")
+
+    assert not outcome.ran
+    assert "disabled" in outcome.notice

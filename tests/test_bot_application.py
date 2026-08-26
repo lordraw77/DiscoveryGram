@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 from telegram import Update
-from telegram.ext import CallbackQueryHandler, CommandHandler, TypeHandler
+from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler, TypeHandler
 
 from discoverygram.adapters.session import MemorySessionStore
 from discoverygram.app.probe import InstanceState
@@ -19,9 +19,10 @@ from discoverygram.bot.application import (
     build_application,
     build_deps,
 )
-from discoverygram.bot.commands import COMMANDS
+from discoverygram.bot.commands import COMMANDS, unknown_command
 from discoverygram.bot.deps import DEPS_KEY, BotDeps, deps_of
 from discoverygram.bot.guard import enforce_allow_list
+from discoverygram.bot.search import PAGE_ACTION, text_message
 from discoverygram.config import Settings, TelegramMode
 from discoverygram.ports.model import InstanceConfig
 from tests.fixtures.telegram import FakeBot, FakeContext
@@ -249,3 +250,42 @@ def test_the_webhook_and_health_ports_cannot_collide(
 
     with pytest.raises(ValueError, match="same port"):
         Settings()  # type: ignore[call-arg]
+
+
+# --- Search wiring --------------------------------------------------------
+
+
+def test_the_search_commands_are_registered(deps: BotDeps) -> None:
+    application = build_application(deps)
+
+    registered = {
+        next(iter(handler.commands))
+        for handler in application.handlers[0]
+        if isinstance(handler, CommandHandler) and handler.commands
+    }
+
+    assert {"search", "find", "tag", "recent"} <= registered
+
+
+def test_the_pagination_callback_is_wired(deps: BotDeps) -> None:
+    application = build_application(deps)
+
+    patterns = [
+        str(getattr(handler.pattern, "pattern", handler.pattern))
+        for handler in application.handlers[0]
+        if isinstance(handler, CallbackQueryHandler) and handler.pattern
+    ]
+
+    assert any(PAGE_ACTION in pattern for pattern in patterns)
+
+
+def test_commands_are_offered_before_the_catch_all_text_handler(deps: BotDeps) -> None:
+    """Otherwise every `/whatever` would be swallowed as a search query."""
+    application = build_application(deps)
+    message_handlers = [
+        handler for handler in application.handlers[0] if isinstance(handler, MessageHandler)
+    ]
+
+    callbacks = [handler.callback for handler in message_handlers]
+
+    assert callbacks.index(unknown_command) < callbacks.index(text_message)
