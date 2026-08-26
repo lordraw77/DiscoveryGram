@@ -1,6 +1,8 @@
 [project]
 name = "discoverygram"
-version = "0.1.0"
+# The version comes from the git tag, never from a literal in this file.
+# See [tool.hatch.version] below and scripts/version.py.
+dynamic = ["version"]
 description = "Telegram bot that makes a NoteDiscovery instance searchable, navigable and writable"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -30,11 +32,22 @@ dev = [
     "respx>=0.22",
     "ruff>=0.8",
     "mypy>=1.13",
+    # Lets scripts/version.py derive the version exactly as the build backend
+    # does, instead of reimplementing the derivation and drifting from it.
+    "hatch-vcs>=0.4",
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+# Single source of truth for the version: the git tag. A build from a tagged
+# commit produces that tag; a build from any other commit produces a PEP 440
+# development version pointing at it (0.1.1.dev4+g1a2b3c4), so an image built
+# from an untagged commit can never be mistaken for a release.
+[tool.hatch.version]
+source = "vcs"
+raw-options = { version_scheme = "guess-next-dev", local_scheme = "node-and-date" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/discoverygram"]

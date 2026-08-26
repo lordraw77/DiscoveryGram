@@ -36,6 +36,12 @@ def env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "TREE_CACHE_TTL_S",
         "NOTEDISCOVERY_MAX_RETRIES",
         "MAX_UPLOAD_MB",
+        "TELEGRAM_WEBHOOK_SECRET",
+        "TELEGRAM_WEBHOOK_PORT",
+        "TELEGRAM_WEBHOOK_PATH",
+        "TELEGRAM_PARSE_MODE",
+        "SESSION_TTL_S",
+        "HEALTH_PORT",
     ]:
         monkeypatch.delenv(key, raising=False)
     for key, value in BASE_ENV.items():

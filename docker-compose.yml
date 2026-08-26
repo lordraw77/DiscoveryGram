@@ -3,6 +3,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # `make docker/run` exports this from the git tag. A plain
+        # `docker compose up --build` leaves it unset, and the image reports
+        # 0.0.0+unknown rather than claiming a version it does not have.
+        VERSION: "${VERSION:-0.0.0+unknown}"
     image: lordraw/discoverygram:latest
     container_name: discoverygram
     restart: unless-stopped
@@ -15,8 +20,13 @@ services:
       # Inside a container, a NoteDiscovery running on the host is reached via
       # host.docker.internal. Override NOTEDISCOVERY_URL in .env if it lives elsewhere.
       HEALTH_PORT: 8080
+      TELEGRAM_WEBHOOK_PORT: 8081
     ports:
       - "${HEALTH_PORT:-8080}:8080"
+      # Only reachable in TELEGRAM_MODE=webhook, and only meant to sit behind a
+      # TLS-terminating reverse proxy — Telegram will not post to plain HTTP.
+      # Polling deployments can leave this mapped; nothing listens on it.
+      - "${TELEGRAM_WEBHOOK_PORT:-8081}:8081"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

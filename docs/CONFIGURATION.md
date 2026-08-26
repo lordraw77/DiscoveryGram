@@ -12,7 +12,11 @@ Invalid or missing required values fail fast at startup with an explicit message
 | `TELEGRAM_ALLOWED_USER_IDS` | — | **Required.** Comma-separated allow-list of Telegram user ids |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | empty | Optional allow-list for group chats |
 | `TELEGRAM_MODE` | `polling` | `polling` or `webhook` |
-| `TELEGRAM_WEBHOOK_URL` | empty | Public HTTPS URL, required when mode is `webhook` |
+| `TELEGRAM_WEBHOOK_URL` | empty | Public HTTPS URL of the reverse proxy, required when mode is `webhook` |
+| `TELEGRAM_WEBHOOK_SECRET` | empty | Telegram signs every delivery with this, so a request reaching the port from anywhere else is rejected before it is parsed. Strongly recommended in webhook mode |
+| `TELEGRAM_WEBHOOK_LISTEN` | `0.0.0.0` | Interface the webhook listener binds inside the container |
+| `TELEGRAM_WEBHOOK_PORT` | `8081` | Local webhook port. Must differ from `HEALTH_PORT` — startup refuses a collision |
+| `TELEGRAM_WEBHOOK_PATH` | `telegram` | Path Telegram posts to, appended to the public URL |
 | `TELEGRAM_WEBHOOK_SECRET` | empty | Secret token validating incoming webhook calls |
 | `TELEGRAM_PARSE_MODE` | `MarkdownV2` | Rendering mode for note bodies |
 
@@ -92,9 +96,9 @@ a default: leaving `<P>_VISION_MODELS` empty removes it from the vision ladder o
 
 | Variable | Default | Description |
 |---|---|---|
-| `SESSION_BACKEND` | `memory` | `memory` or `redis` |
+| `SESSION_BACKEND` | `memory` | `memory` (single replica, lost on restart) or `redis` (survives restarts, shared across replicas — keeps existing keyboards working across a deploy). Redis needs the optional extra: `uv sync --extra redis` |
 | `REDIS_URL` | empty | Required when the backend is `redis` |
-| `SESSION_TTL_S` | `3600` | Lifetime of pagination and draft state |
+| `SESSION_TTL_S` | `3600` | Lifetime of pagination state, drafts and **callback tokens**. A button older than this stops working, so lower it only deliberately |
 | `RESULTS_PAGE_SIZE` | `5` | Search hits per page |
 | `TREE_PAGE_SIZE` | `10` | Tree entries per page |
 | `LONG_NOTE_MODE` | `paged` | `paged` or `split` |
@@ -109,3 +113,24 @@ a default: leaving `<P>_VISION_MODELS` empty removes it from the vision ladder o
 | `LOG_FORMAT` | `json` | `json` or `console` |
 | `HEALTH_PORT` | `8080` | Port for `/healthz` and `/readyz` |
 | `METRICS_ENABLED` | `false` | Expose Prometheus metrics on the health port |
+
+## Versioning
+
+There is no version variable to set. The version comes from the git tag:
+
+```bash
+make version          # what the build backend will produce
+make docker/build     # builds and tags the image with it
+make release          # check + build, and warns if the commit is not tagged
+```
+
+A tagged commit produces that tag (`0.2.0`); any other commit produces a PEP 440 development
+version pointing at it (`0.2.1.dev4+g1a2b3c4`). The image reports its own version at
+`GET /healthz` and in `/status`.
+
+Because `.git` is not part of the Docker build context, a bare `docker build` cannot see the tag
+and reports `0.0.0+unknown`. Pass it explicitly if you are not using the Makefile:
+
+```bash
+docker build --build-arg VERSION="$(make -s version)" -t discoverygram:local .
+```

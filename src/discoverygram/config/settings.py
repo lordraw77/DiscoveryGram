@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     telegram_mode: TelegramMode = TelegramMode.POLLING
     telegram_webhook_url: str = ""
     telegram_webhook_secret: str = ""
+    # Where the webhook listener binds inside the container, and the path
+    # Telegram posts to. The public URL above is what Telegram is told; these
+    # describe the local side of the reverse proxy.
+    telegram_webhook_listen: str = "0.0.0.0"  # noqa: S104 - a container binds to all interfaces
+    telegram_webhook_port: int = Field(default=8081, gt=0, lt=65536)
+    telegram_webhook_path: str = "telegram"
     telegram_parse_mode: Literal["MarkdownV2", "HTML"] = "MarkdownV2"
 
     # --- NoteDiscovery ----------------------------------------------------
@@ -164,8 +170,11 @@ class Settings(BaseSettings):
                 "an empty allow-list would expose the bot to everyone"
             )
 
-        if self.telegram_mode is TelegramMode.WEBHOOK and not self.telegram_webhook_url:
-            raise ValueError("TELEGRAM_WEBHOOK_URL is required when TELEGRAM_MODE=webhook")
+        if self.telegram_mode is TelegramMode.WEBHOOK:
+            if not self.telegram_webhook_url:
+                raise ValueError("TELEGRAM_WEBHOOK_URL is required when TELEGRAM_MODE=webhook")
+            if self.telegram_webhook_port == self.health_port:
+                raise ValueError("TELEGRAM_WEBHOOK_PORT and HEALTH_PORT cannot be the same port")
 
         if self.session_backend is SessionBackend.REDIS and not self.redis_url:
             raise ValueError("REDIS_URL is required when SESSION_BACKEND=redis")

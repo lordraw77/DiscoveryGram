@@ -29,8 +29,15 @@ image's handler source, which settled both open behaviours and corrected four as
 On top of the phase 0 foundations, the NoteDiscovery integration layer is built and tested: the
 `NoteStore` port and domain model, `RestNoteStore`, the flag-gated `McpNoteStore`, the client-side
 compensation layer (derived folder tree, literal search, ranking, read-modify-write editing,
-rate-limit pacing) and the startup probe. `make check` is green at 92% coverage, with an opt-in
-live suite (`make test-live`) waiting on credentials. Phase 2 (the Telegram bot core) is next.
+rate-limit pacing) and the startup probe.
+
+**Phase 2 complete.** The bot core runs: the allow-list, the command router (`/start`, `/help`,
+`/whoami`, `/cancel`, `/status`), the session store, the callback-token mechanism, the message
+renderer and the global error handler. `make check` is green at 93% coverage across 305 tests,
+with an opt-in live suite (`make test-live`) waiting on credentials. Phase 3 (search) is next.
+
+The version now comes from the git tag rather than a literal — see
+[CONFIGURATION.md](CONFIGURATION.md#versioning).
 
 ## Decisions already taken
 

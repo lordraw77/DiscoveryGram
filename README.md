@@ -4,10 +4,10 @@ Make a [NoteDiscovery](https://github.com/gamosoft/NoteDiscovery) vault fully us
 **Telegram**: search it, navigate it, read it, and create notes in it — including LLM-assisted
 creation from images.
 
-> **Status: phase 1 complete.** The foundations (configuration, logging, health, container, CI)
-> and the whole NoteDiscovery integration layer are in place: a `NoteStore` port with REST and
-> MCP adapters, the client-side compensation for everything the API does not offer, and a startup
-> probe. The Telegram bot itself lands in phase 2. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status: phase 2 complete.** The bot runs: an allow-listed user gets `/start`, `/help`,
+> `/whoami`, `/cancel` and `/status` over a NoteDiscovery integration layer with REST and MCP
+> adapters. Search, browse and note creation land in phases 3, 4 and 6.
+> See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Quick start
 
@@ -27,6 +27,22 @@ Required values in `.env`:
 | `NOTEDISCOVERY_URL` | Base URL **with port**, e.g. `http://host.docker.internal:8000` |
 
 `NOTEDISCOVERY_API_KEY` is optional: NoteDiscovery may run unauthenticated.
+
+Send `/whoami` to the bot to discover the id you need for the allow-list — an unlisted user is
+refused, but the refusal tells them their own id.
+
+## Versioning
+
+The version comes from the **git tag**, not from a literal in `pyproject.toml`:
+
+```bash
+make version         # 0.2.0 on a tagged commit, 0.2.1.dev4+g1a2b3c4 otherwise
+make docker/build    # tags the image with it and bakes it into the metadata
+make release         # check + build, warns if the commit is not tagged
+```
+
+`/healthz` and `/status` both report the running version, so what is deployed is always
+identifiable. Details in [docs/CONFIGURATION.md](docs/CONFIGURATION.md#versioning).
 
 ## Docker
 

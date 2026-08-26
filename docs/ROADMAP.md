@@ -124,7 +124,7 @@ vault.
 
 ---
 
-## Phase 2 — Telegram bot core
+## Phase 2 — Telegram bot core — **COMPLETE**
 
 **Work**
 1. `python-telegram-bot` v22.x async `Application`; polling by default, webhook mode behind a flag.
@@ -136,8 +136,52 @@ vault.
 6. `RateLimiter` wired into the application to respect Telegram flood limits.
 7. Message rendering utilities: MarkdownV2 escaping, 4096-character chunking, keyboard builders.
 
-**Definition of Done** — an allow-listed user gets a working `/help` and `/status`; a non-listed
-user is refused; restarting the container loses no session state when Redis is enabled.
+**Delivered**
+
+| Item | Where |
+|---|---|
+| `SessionStore` port — TTL-bounded, JSON-valued, on the request path rather than a cache | `ports/session_store.py` |
+| `MemorySessionStore` (expiry, periodic sweep, copy-in/copy-out) and `RedisSessionStore` (lazy import, key prefix, server-side expiry) | `adapters/session.py` |
+| Opaque callback tokens: random per issue, `action:token` so a handler routes without a store round trip, plus `revoke` and `extend` | `bot/tokens.py` |
+| MarkdownV2/HTML escaping, fenced blocks, paragraph-aware 4096-character chunking, keyboard and pagination builders | `bot/render.py` |
+| Allow-list as a `TypeHandler` in group **-1**, with chat allow-listing and a once-per-session refusal | `bot/guard.py` |
+| `/start` `/help` `/whoami` `/cancel` `/status`, unknown-command reply, published command menu | `bot/commands.py` |
+| Global error handler mapping every port error to one actionable sentence | `bot/errors.py` |
+| `BotDeps` container reachable from any handler, typed | `bot/deps.py` |
+| Application builder (`AIORateLimiter`, bounded concurrency, narrowed `allowed_updates`) and `BotRunner` driving the manual lifecycle | `bot/application.py` |
+| Startup/shutdown ordering, `InvalidToken` → exit 2, other Telegram failures → exit 1 | `__main__.py` |
+| **Secret scrubbing by value** in both the structlog and stdlib pipelines | `util/logging.py` |
+
+**Two problems the work surfaced**
+
+- **python-telegram-bot logs the bot token.** It logs the Bot API URL — which contains the token —
+  on every request it builds, and a smoke run put it straight into the console. Key-name redaction
+  could never catch it, because the secret is embedded in a URL. Fixed by scrubbing the literal
+  token and API key from every record in both pipelines, and by quieting the libraries that
+  narrate requests. Verified: at `LOG_LEVEL=DEBUG`, neither value appears anywhere in the output.
+- **`/status` was unsendable.** Its labels contained unescaped MarkdownV2 reserved characters
+  (`Allow-listed`, a trailing full stop), which the Bot API rejects with a 400 — the whole message,
+  not the offending character. Caught by a test that asserts every reply would survive the API,
+  and fixed by escaping every literal rather than only the interpolated values.
+
+**Verified, not assumed**
+
+- `make check` green: ruff clean, mypy strict clean on 64 files, **305 tests passing at 93%
+  coverage**, with 13 live tests still held behind `-m live`.
+- The allow-list is proven to sit in group -1 and to raise `ApplicationHandlerStop`, so it cannot
+  be bypassed by a handler that forgets to check.
+- A stranger is proven to be answered **once**, not on every message, and the refusal is proven to
+  leak nothing about the instance, the URL or the other allow-listed ids.
+- Every reply is asserted to be MarkdownV2-safe, against titles containing `( ) [ ] ! . -`.
+- A note path three times Telegram's callback limit is proven to round-trip through a button.
+- Chunking is proven never to exceed 4096 characters and never to drop a character of the body.
+- The error handler is proven never to put a traceback, a file path or a secret in the chat, and
+  to survive a blocked bot without re-entering itself.
+- Startup is proven to bring the health server up **before** probing, and shutdown to release the
+  runner, health server, sessions and note store even when startup fails halfway.
+
+**Not verified** — no live Telegram token was available, so nothing here has spoken to the Bot API.
+The wiring, lifecycle and rendering are tested; the first real conversation is not.
 
 ---
 
@@ -151,8 +195,8 @@ server-side disable and a minimum query length. Modes beyond full-text are built
    same call), tag search (`GET /api/tags/{tag}`), tag listing, recent notes
    (`get_recent_notes(days, limit)`).
 2. `/search`, `/find`, `/tag`, `/recent`, plus plain-text-message search.
-3. Client-side ranking and snippet extraction with term highlighting, since the API returns
-   neither scores nor snippets.
+3. Client-side ranking, already built in phase 1. Snippets come from the API but arrive as HTML
+   and are stripped in `adapters/ranking.py`; phase 3 re-highlights the term in Telegram's syntax.
 4. Paginated rendering with `◀ / ▶`; cursor state in the session store, TTL-bounded. Always send
    an explicit `limit` — the endpoint has no server-side cap.
 5. Handle the real edge cases: query below the minimum length, empty `q`, search disabled (403),
@@ -303,18 +347,20 @@ early cut-line if scope needs trimming.
 | Search disabled server-side | `/search` silently useless | Probed at startup via `/api/config` (`searchEnabled`); commands disabled with an explicit message |
 | Minimum query length is not exposed by the API | Short queries look broken | Carried as `SEARCH_MIN_QUERY_LENGTH` (2) and enforced client-side |
 | Unbounded `/api/search` with no default limit | Whole-vault response | Explicit `limit` on every call, enforced in the adapter |
-| Telegram formatting and size limits | Broken rendering on real notes | Centralised renderer with escaping and chunking, tested against pathological note bodies |
-| `callback_data` 64-byte limit | Navigation cannot carry state | Opaque token + server-side session store, designed in phase 2 |
+| Telegram formatting and size limits | Broken rendering on real notes | Centralised renderer built in phase 2, tested against pathological bodies. Every reply asserted MarkdownV2-safe — this already caught an unsendable `/status` |
+| ~~`callback_data` 64-byte limit~~ | — | **Closed in phase 2.** Opaque token plus server-side session store, proven against a path three times the limit |
 | LLM cost drift | Unbounded spend | Per-user daily caps, usage accounting, local `ollama` as a chain terminator |
+| Third-party libraries logging our secrets | Token in the logs | Found in phase 2: python-telegram-bot logs the Bot API URL. Literal secret values are scrubbed from both logging pipelines, verified at `LOG_LEVEL=DEBUG` |
 | Telegram bot API caps file downloads at 20 MB | Large attachments rejected | Validate early, tell the user the limit, document it |
 
 ## Open items
 
-Phases 0 and 1 are complete and need no live instance to have been correct. What is still needed:
+Phases 0, 1 and 2 are complete and were built without live credentials. What is still needed:
 
 1. `NOTEDISCOVERY_URL` (with port) and the API key of the live instance — if the instance runs
    unauthenticated, say so, the adapter supports both.
-2. BotFather token and the list of Telegram user ids to allow-list.
+2. BotFather token and the list of Telegram user ids to allow-list. The bot core is finished and
+   tested, but has never spoken to the Bot API; this is what turns that into a running bot.
 3. Which LLM providers already have credentials, so the phase 5 chains start from real keys.
 4. A run of `make test-live` and `make verify-contract` against the real vault. Both behaviours
    they probe are now confirmed from source; the run is what turns "confirmed in code" into

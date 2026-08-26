@@ -12,11 +12,20 @@ the instance is reachable and whether search is enabled, so the commands that ne
 disabled cleanly rather than failing per request. Details in
 [ARCHITECTURE.md](ARCHITECTURE.md#3-notediscovery-integration).
 
-## 2. Access control (P2)
+## 2. Bot core and access control (P2)
 
-- Allow-list of Telegram user ids; unknown users get a single generic refusal.
+- Allow-list of Telegram user ids, enforced before any handler runs. A refusal is sent **once**
+  per session TTL, not on every message, and includes the caller's own id — the number the
+  operator needs for the allow-list — and nothing else.
 - Optional group-chat support: the bot only answers when the chat id is allow-listed too.
-- `/whoami` — shows the caller's Telegram id, useful when populating the allow-list.
+- `/start`, `/help`, `/whoami`, `/cancel`, `/status`, plus a reply to unrecognised commands.
+  `/help` lists only what actually works in the current build.
+- `/status` reports version, uptime, instance reachability and version, whether search is enabled,
+  vault counters, session backend health, and accepted/rejected update counts.
+- Long polling by default; webhook mode behind `TELEGRAM_MODE=webhook`, with a shared secret.
+- Session state in `memory` or `redis`, and opaque tokens so a button can carry a note path that
+  would never fit in Telegram's 64-byte `callback_data`.
+- Friendly errors: one actionable sentence in the chat, the full detail in the logs.
 
 ## 3. Search (P3)
 
