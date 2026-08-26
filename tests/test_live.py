@@ -337,3 +337,89 @@ async def test_folder_operations_round_trip(live_store: RestNoteStore) -> None:
     await navigation.create_folder(base)
     await navigation.rename_folder(base, f"{base}-renamed")
     await navigation.delete_folder(f"{base}-renamed")
+
+
+# --- Creation (phase 6) ---------------------------------------------------
+#
+# Everything here writes under the scratch folder and is removed in teardown,
+# like the rest of this suite. Nothing depends on an LLM: these exercise the
+# vault side of capture, which is the half that a live instance can prove.
+
+
+async def test_a_note_is_created_read_back_and_removed(live_store: RestNoteStore) -> None:
+    from discoverygram.app.capture import CaptureService
+
+    settings = Settings()  # type: ignore[call-arg]
+    capture = CaptureService(live_store, settings)
+    path = f"{SCRATCH_FOLDER}/created-{uuid.uuid4().hex[:8]}.md"
+
+    ref = await capture.create(path, "body text", title="Live title", tags=("livetest",))
+    note = await live_store.get_note(ref.path, include_backlinks=False)
+
+    assert "# Live title" in note.content
+    assert "#livetest" in note.content
+
+
+async def test_the_collision_rule_holds_against_a_real_vault(
+    live_store: RestNoteStore,
+) -> None:
+    """`POST /api/notes/{path}` is an upsert; a second create must not overwrite."""
+    from discoverygram.app.capture import CaptureService
+
+    capture = CaptureService(live_store, Settings())  # type: ignore[call-arg]
+    folder = f"{SCRATCH_FOLDER}/collide-{uuid.uuid4().hex[:6]}"
+
+    first = await capture.resolve(folder, title="Same name")
+    await capture.create(first.path, "the original")
+
+    second = await capture.resolve(folder, title="Same name")
+    await capture.create(second.path, "the second")
+
+    assert second.path != first.path
+    assert second.renamed_from == first.path
+    original = await live_store.get_note(first.path, include_backlinks=False)
+    assert "the original" in original.content
+
+
+async def test_quick_capture_appends_to_one_note_per_day(
+    live_store: RestNoteStore,
+) -> None:
+    """Twenty thoughts in an afternoon should be one page, not twenty files."""
+    from discoverygram.app.capture import CaptureService
+
+    settings = Settings().model_copy(  # type: ignore[call-arg]
+        update={"inbox_path": f"{SCRATCH_FOLDER}/Inbox"}
+    )
+    capture = CaptureService(live_store, settings)
+
+    first = await capture.quick("first live thought")
+    second = await capture.quick("second live thought")
+
+    assert first.path == second.path
+    note = await live_store.get_note(first.path, include_backlinks=False)
+    assert "first live thought" in note.content
+    assert "second live thought" in note.content
+
+
+async def test_media_upload_round_trips(live_store: RestNoteStore) -> None:
+    """The endpoint the image-to-note flow depends on, and REST-only."""
+    # A 1x1 PNG: the smallest thing the endpoint will accept.
+    import base64
+
+    pixel = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+
+    upload = await live_store.upload_media(
+        f"live-{uuid.uuid4().hex[:6]}.png", pixel, content_type="image/png"
+    )
+
+    assert upload.path
+
+
+async def test_templates_answer_or_say_there_are_none(live_store: RestNoteStore) -> None:
+    templates = await live_store.list_templates()
+
+    assert isinstance(templates, list)
+    if templates:
+        assert (await live_store.get_template(templates[0].name)).content is not None

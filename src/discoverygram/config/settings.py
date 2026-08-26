@@ -122,6 +122,15 @@ class Settings(BaseSettings):
     llm_circuit_failure_threshold: int = Field(default=5, gt=0)
     llm_circuit_reset_s: float = Field(default=120.0, gt=0)
     llm_daily_call_limit_per_user: int = Field(default=100, ge=0)
+    # How many tags a generation step may put on a note. A model asked for
+    # "some tags" will happily return twenty, and a vault's tag index is
+    # shared: over-tagging one note degrades browsing for every other.
+    generated_tags_max: int = Field(default=5, gt=0, le=20)
+    # Whether a generated note records the provider and model that made it.
+    provenance_enabled: bool = True
+    # How many notes `/ask` may read as context. Each one is a vault read and
+    # tokens in the prompt, so this bounds both cost and latency.
+    ask_context_notes: int = Field(default=5, gt=0, le=20)
 
     # --- Sessions, cache, limits -----------------------------------------
     session_backend: SessionBackend = SessionBackend.MEMORY

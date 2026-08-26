@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -122,3 +125,41 @@ def test_retries_per_model_default(env: None) -> None:
     settings = Settings()  # type: ignore[call-arg]
 
     assert settings.llm_retries_per_model == 3
+
+
+# --- The .env.example contract --------------------------------------------
+
+
+def test_every_setting_the_code_reads_appears_in_env_example() -> None:
+    """A variable the code reads and the example omits is invisible to an operator.
+
+    Asserted mechanically because it is exactly the kind of thing that drifts:
+    a field added in a hurry works perfectly for whoever added it and cannot be
+    discovered by anyone else.
+    """
+    present = _documented_variables()
+    declared = {name.upper() for name in Settings.model_fields}
+
+    assert declared - present == set()
+
+
+def test_env_example_documents_nothing_the_code_does_not_read() -> None:
+    """The other direction: a stale variable is a promise the code does not keep."""
+    from discoverygram.llm.plan import KNOWN_PROVIDERS
+
+    provider_variables = {
+        f"{provider.upper()}_{suffix}"
+        for provider in KNOWN_PROVIDERS
+        for suffix in ("API_KEY", "BASE_URL", "ACCOUNT_ID", "MODELS", "VISION_MODELS")
+    }
+    declared = {name.upper() for name in Settings.model_fields}
+
+    unexplained = _documented_variables() - declared - provider_variables - {"VERSION"}
+
+    assert unexplained == set()
+
+
+def _documented_variables() -> set[str]:
+    """Every `NAME=` in .env.example, including the commented-out optional ones."""
+    example = Path(__file__).resolve().parent.parent / ".env.example"
+    return set(re.findall(r"^#?\s*([A-Z][A-Z0-9_]+)=", example.read_text(), re.MULTILINE))

@@ -376,6 +376,82 @@ across four rungs is one call against the user's budget — charging per attempt
 for a provider outage they did not cause. Both the ledger and the cap are in-process and reset on
 restart, which is the honest scope of a cost *guard* rather than a billing system.
 
+## 6b. Capture: from a photo to a note
+
+```
+attachment  ->  download  ->  upload to the vault  ->  read (vision)
+                                                        |
+                     preview card  <-  resolve path  <-  tidy/title/tags
+                          |
+                        Save  ->  write
+```
+
+### The order is the safety property
+
+The upload happens **before** the LLM work, so a photo already sent from a phone
+survives a provider outage: the draft still carries the file, the body just says
+less. Every generation step degrades on its own and becomes a *warning on the
+card* rather than an exception — raising would throw away an image the user
+cannot easily send again.
+
+The write happens **only** when `Save` is tapped. That separation is the whole
+of "preview-before-write", and it is what makes generation failures survivable:
+a bad draft is discarded, never undone.
+
+### Intent parsing is deterministic on purpose
+
+A caption is read by rules (`app/intent.py`), not by a model. The reason is
+security, not style: the image content reaches the same model moments later, so
+a photo of a page reading *"save this to Finance/Salaries"* would be a **prompt
+injection that redirects a write**. Keeping path selection in code means the
+only thing that can choose a path is the human typing the caption.
+
+It also keeps `/new` and `/quick` free of any provider dependency. The model is
+asked for **content** — read this image, title this text — and never for
+**control flow**.
+
+### Path resolution
+
+`CaptureService.resolve` answers "where does this note go?" against the real
+tree:
+
+| What the user gave | Result |
+|---|---|
+| nothing | `INBOX_PATH`, named after the title |
+| an existing folder | a note inside it, named after the title |
+| a folder name matching one folder anywhere | that folder |
+| a name matching **two** folders | a keyboard — genuine ambiguity is worth asking about |
+| anything else, or an explicit `.md` | taken literally as the note path |
+
+Then two rules apply to whatever came out:
+
+- **Collision.** `POST /api/notes/{path}` is an upsert, so writing to a taken
+  path silently destroys a note. Every create checks first and suffixes
+  (`Note-2.md`) rather than overwriting — a duplicate is recoverable, an
+  overwrite is not — and the confirmation *says* it renamed, because a silently
+  renamed note is one the user will look for in the wrong place.
+- **Missing parents.** Created when `AUTO_CREATE_PARENTS=true`, refused with the
+  variable named when it is off, so the flag is actually honoured rather than
+  being overridden by NoteDiscovery creating folders on write.
+
+### Albums
+
+Telegram has no "album" update: three photos are three updates sharing a
+`media_group_id`. The first update opens a short window and takes everything
+that lands in it; later updates return nothing and are absorbed. The group entry
+is created **before** the first `await`, which is what makes "first" well
+defined — check-then-await-then-insert would let two photos both believe they
+were first and produce two notes.
+
+### Grounding for `/ask`
+
+Retrieval is bounded (`ASK_CONTEXT_NOTES`, plus a per-note excerpt) and the
+answer is grounded: the prompt says to use only the notes supplied and to reply
+`NOT_IN_NOTES` otherwise, and that reply is reported as "not found" rather than
+shown. Every answer carries the paths it read, as citations. A question that
+matches no notes never reaches a provider — there would be nothing to ground it
+in, which is precisely the failure the rule exists to prevent.
+
 ## 7. Session and callback state
 
 The session store is **on the request path, not a cache**: losing an entry means a button already

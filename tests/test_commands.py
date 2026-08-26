@@ -23,6 +23,7 @@ from discoverygram.bot.commands import (
 from discoverygram.bot.commands import (
     COMMANDS as CORE_COMMANDS,
 )
+from discoverygram.bot.create import COMMANDS as CREATE_COMMANDS
 from discoverygram.bot.deps import DEPS_KEY, BotDeps
 from discoverygram.bot.search import COMMANDS as SEARCH_COMMANDS
 from discoverygram.bot.tokens import CallbackTokens
@@ -44,7 +45,7 @@ from tests.fixtures.telegram import (
 
 # Every command the bot actually answers, from the two registries themselves —
 # so a new command cannot be advertised without also being handled.
-ALL_COMMANDS = {**CORE_COMMANDS, **SEARCH_COMMANDS, **BROWSE_COMMANDS}
+ALL_COMMANDS = {**CORE_COMMANDS, **SEARCH_COMMANDS, **BROWSE_COMMANDS, **CREATE_COMMANDS}
 
 
 class StubNoteStore:
@@ -102,8 +103,6 @@ async def test_help_lists_only_commands_that_exist(settings: Settings, bot: Fake
         if command == "start":
             continue  # Telegram sends /start itself; the help text need not.
         assert f"/{command}" in text, command
-    for unimplemented in ("/new", "/quick", "/summarize", "/ask"):
-        assert unimplemented not in text
     assert_markdown_v2_safe(text)
 
 

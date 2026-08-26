@@ -36,8 +36,8 @@ the MCP subprocess. See [notediscovery-contract.md](notediscovery-contract.md).
 | `SEARCH_DEFAULT_LIMIT` | `50` | Always sent to `/api/search`, which has **no server-side default cap** |
 | `SEARCH_MIN_QUERY_LENGTH` | `2` | Shortest query NoteDiscovery acts on. A hard-coded server constant that no endpoint exposes, so the bot carries its own copy and refuses shorter queries locally. Raise it only to match a patched instance |
 | `TREE_CACHE_TTL_S` | `300` | Lifetime of the client-side folder tree derived from `/api/notes`. Every write invalidates it regardless, so a low value is rarely needed; `0` disables caching |
-| `INBOX_PATH` | `Inbox` | Target of `/quick` |
-| `AUTO_CREATE_PARENTS` | `true` | Call `POST /api/folders` for missing parents when writing a note |
+| `INBOX_PATH` | `Inbox` | Where `/quick` captures land — **one note per day** under this folder, not one file per thought |
+| `AUTO_CREATE_PARENTS` | `true` | Create missing parent folders when writing a note. With it **off**, a note aimed at a folder that does not exist is refused with the folder named, rather than silently inventing a tree |
 
 ### MCP subprocess (only when `NOTEDISCOVERY_TRANSPORT=mcp`)
 
@@ -104,6 +104,14 @@ you if you leave it off. Inside a container, `localhost` means the container: us
 Per-provider setup, dialect quirks and how to read a failure are in
 [LLM_PROVIDERS.md](LLM_PROVIDERS.md).
 
+### Generation behaviour
+
+| Variable | Default | Description |
+|---|---|---|
+| `GENERATED_TAGS_MAX` | `5` | Most tags a generated note may carry. A model asked for "some tags" will happily return twenty, and the vault's tag index is shared across every note |
+| `PROVENANCE_ENABLED` | `true` | Record the provider and model on generated notes, as an HTML comment — greppable, but never shown in a snippet or an export |
+| `ASK_CONTEXT_NOTES` | `5` | How many notes `/ask` may read as context. Each one is a vault read and tokens in the prompt |
+
 ### Task profiles
 
 Four tasks, two capabilities. `chat`, `title` and `summarise` are all chat-capability tasks and
@@ -123,8 +131,8 @@ configures the numbers. Two chains, not four.
 | `RESULTS_PAGE_SIZE` | `5` | Search hits per page |
 | `TREE_PAGE_SIZE` | `10` | Tree entries per page |
 | `LONG_NOTE_MODE` | `paged` | `paged` or `split` |
-| `MAX_UPLOAD_MB` | `20` | Upper bound for downloaded Telegram files |
-| `DEFAULT_TEXT_ACTION` | `search` | What a plain non-command message does: `search` or `quick` |
+| `MAX_UPLOAD_MB` | `20` | Upper bound for attachments. Checked against the size Telegram reports **before** downloading, so an oversized file costs no transfer. Telegram's own Bot API cap is 20 MB |
+| `DEFAULT_TEXT_ACTION` | `search` | What a plain non-command message does: `search` runs a query, `quick` captures into today's inbox note. With `quick` a message is **never also searched** — a thought you meant to keep must not become a query |
 
 ## Observability
 

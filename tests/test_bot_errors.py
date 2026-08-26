@@ -22,6 +22,11 @@ from discoverygram.ports.errors import (
     Unavailable,
     Unsupported,
 )
+from discoverygram.ports.llm_errors import (
+    LlmNoProvider,
+    LlmQuotaExceeded,
+    LlmUnavailable,
+)
 from discoverygram.ports.model import InstanceConfig
 from discoverygram.util.paths import InvalidPath
 from tests.fixtures.telegram import FakeBot, FakeContext, make_update
@@ -147,3 +152,35 @@ async def test_no_error_means_nothing_to_do(settings: Settings, bot: FakeBot) ->
     await handle_error(make_update(bot), context)
 
     assert bot.sent == []
+
+
+# --- LLM failures ---------------------------------------------------------
+
+
+def test_a_spent_daily_cap_is_stated_plainly_rather_than_as_a_failure() -> None:
+    """Nothing is broken: it is the user's own budget, and they should know."""
+    message = user_message(LlmQuotaExceeded("You have used your 100 AI requests for today."))
+
+    assert message == "You have used your 100 AI requests for today."
+
+
+def test_a_missing_chain_keeps_the_variable_it_names() -> None:
+    """ "Something went wrong" would hide the one thing that fixes it."""
+    message = user_message(LlmNoProvider("No chat model is configured. Check LLM_CHAIN_CHAT."))
+
+    assert "LLM_CHAIN_CHAT" in message
+
+
+def test_any_other_provider_failure_points_at_status() -> None:
+    message = user_message(LlmUnavailable("groq is unreachable"))
+
+    assert "/status" in message
+    # The provider's own words are not repeated: they name hosts and models the
+    # user cannot act on.
+    assert "groq" not in message
+
+
+def test_a_provider_failure_is_an_expected_condition_not_a_defect() -> None:
+    """It must not fill the log with tracebacks when a provider has a bad day."""
+    assert is_expected(LlmUnavailable("down")) is True
+    assert is_expected(RuntimeError("bug")) is False

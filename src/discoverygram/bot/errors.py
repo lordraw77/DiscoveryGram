@@ -4,8 +4,9 @@ One rule: **the user gets a sentence, the log gets everything**. A stack trace
 in a chat is useless to the person reading it and tells anyone who provoked it
 more about the deployment than they should know.
 
-Errors the adapters already classified (`NoteStoreError` and its subclasses) map
-to a specific, actionable message. Anything else is a bug, and says so.
+Errors the adapters already classified — `NoteStoreError` and `LlmError` and
+their subclasses — map to a specific, actionable message. Anything else is a
+bug, and says so.
 """
 
 from __future__ import annotations
@@ -24,6 +25,11 @@ from discoverygram.ports.errors import (
     Unauthorized,
     Unavailable,
     Unsupported,
+)
+from discoverygram.ports.llm_errors import (
+    LlmError,
+    LlmNoProvider,
+    LlmQuotaExceeded,
 )
 from discoverygram.util.logging import get_logger
 from discoverygram.util.paths import InvalidPath
@@ -64,6 +70,19 @@ def user_message(error: BaseException) -> str:
     if isinstance(error, NoteStoreError):
         return f"Your notes instance had a problem: {error}"
 
+    # The daily cap is the user's own budget, so it is stated plainly rather
+    # than dressed up as a failure — nothing is broken.
+    if isinstance(error, LlmQuotaExceeded):
+        return str(error)
+    # A missing chain is a configuration gap, and the message already names the
+    # variable to set; repeating it as "something went wrong" would hide that.
+    if isinstance(error, LlmNoProvider):
+        return str(error)
+    if isinstance(error, LlmError):
+        return (
+            "The AI providers could not answer that. Check /status to see which ones are degraded."
+        )
+
     return GENERIC
 
 
@@ -73,7 +92,7 @@ def is_expected(error: BaseException) -> bool:
     Expected failures are logged at warning with no traceback; everything else
     is a bug and gets the full exception.
     """
-    return isinstance(error, NoteStoreError | InvalidPath)
+    return isinstance(error, NoteStoreError | InvalidPath | LlmError)
 
 
 async def handle_error(update: object, context: object) -> None:

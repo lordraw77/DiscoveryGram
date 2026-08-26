@@ -34,6 +34,8 @@ from telegram.ext import (
 
 from discoverygram.app.probe import InstanceState
 from discoverygram.bot import browse as browse_handlers
+from discoverygram.bot import create as create_handlers
+from discoverygram.bot import drafts
 from discoverygram.bot import search as search_handlers
 from discoverygram.bot.commands import COMMAND_MENU, COMMANDS, unknown_command
 from discoverygram.bot.deps import DEPS_KEY, BotDeps
@@ -123,6 +125,7 @@ def build_application(deps: BotDeps) -> Application:  # type: ignore[type-arg]
         **COMMANDS,
         **search_handlers.COMMANDS,
         **browse_handlers.COMMANDS,
+        **create_handlers.COMMANDS,
     }.items():
         application.add_handler(CommandHandler(name, handler))
 
@@ -131,17 +134,40 @@ def build_application(deps: BotDeps) -> Application:  # type: ignore[type-arg]
         (browse_handlers.NAV_ACTION, browse_handlers.nav_callback),
         (browse_handlers.NOTE_ACTION, browse_handlers.note_callback),
         (browse_handlers.ACT_ACTION, browse_handlers.act_callback),
+        (drafts.DRAFT_ACTION, create_handlers.draft_callback),
+        (create_handlers.TEMPLATE_ACTION, create_handlers.template_callback),
     ):
         application.add_handler(CallbackQueryHandler(callback, pattern=rf"^{action}:"))
     application.add_handler(CallbackQueryHandler(_noop_callback, pattern=r"^noop:"))
 
-    # Order matters, twice over. The command filter has to be offered the update
-    # before any text handler, or every `/whatever` would become a search. And a
-    # pending edit has to claim the message before the search handler does, or
-    # text meant as a note body would also be run as a query.
+    # Photos and image documents enter the capture pipeline. Registered before
+    # the text handlers because a captioned photo is a photo, not a message.
+    application.add_handler(
+        MessageHandler(filters.PHOTO | filters.Document.IMAGE, create_handlers.attachment_message)
+    )
+
+    # Order matters, three times over. The command filter has to be offered the
+    # update before any text handler, or every `/whatever` would become a
+    # search. A pending draft or edit has to claim the message before anything
+    # else, or text meant as a title would also be run as a query. And quick
+    # capture has to precede search, because with DEFAULT_TEXT_ACTION=quick a
+    # message the user meant to keep must not quietly become a query.
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+    # A forward is someone else's words: it goes to a preview, because the title
+    # and the path are exactly what the user has not decided yet.
+    application.add_handler(
+        MessageHandler(
+            filters.FORWARDED & filters.TEXT & ~filters.COMMAND, create_handlers.forwarded_message
+        )
+    )
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, create_handlers.pending_input)
+    )
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, browse_handlers.pending_input)
+    )
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, create_handlers.default_text_capture)
     )
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, search_handlers.text_message)

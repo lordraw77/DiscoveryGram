@@ -39,6 +39,11 @@ COMMAND_MENU = [
     BotCommand("related", "Notes linked with a note"),
     BotCommand("move", "Move or rename a note"),
     BotCommand("folder", "Create, rename, move or delete a folder"),
+    BotCommand("new", "Create a note at a path, or from a template"),
+    BotCommand("quick", "Capture a thought into today's inbox note"),
+    BotCommand("template", "Create a note from a template"),
+    BotCommand("summarize", "Summarise a note with AI"),
+    BotCommand("ask", "Ask a question answered from your notes"),
     BotCommand("status", "Connection, instance and session health"),
     BotCommand("whoami", "Show your Telegram id"),
     BotCommand("cancel", "Abort the current multi-step flow"),
@@ -54,7 +59,8 @@ Your NoteDiscovery vault, from Telegram.
 /tag <name> — notes carrying a tag; /tag alone lists them
 /recent [days] — recently changed notes
 
-Any plain message you send is treated as a search.
+Any plain message you send is treated as a search — or as a quick capture,
+when the operator set `DEFAULT_TEXT_ACTION=quick`.
 
 *Reading and navigating*
 /browse [path] — walk the folder tree
@@ -65,18 +71,32 @@ Any plain message you send is treated as a search.
 Every note carries buttons: Edit, Append, Tag, Backlinks, Related, Path, \
 Raw, Share, Delete.
 
+*Creating notes*
+/new <path> <text> — create a note
+/new --template <name> <path> — create one from a template
+/template — pick a template from a list
+/quick <text> — capture into today's inbox note
+
+Send a *photo* and I read it, write it up and show you a draft. Add a caption \
+to say where it goes and what to generate, for example:
+"extract the text, save under Projects/Research, you generate the title".
+Several photos sent together become one note.
+
+Nothing is written until you tap *Save* on the draft.
+
 *Changing things*
 /move <old> <new> — move or rename a note
 /folder new|rename|move|delete — folder operations
+
+*Asking things*
+/summarize <path> — summarise a note
+/ask <question> — answer from your notes, with the sources
 
 *Everything else*
 /help — this list
 /status — connection, instance and session health
 /whoami — your Telegram id and chat id
 /cancel — abort whatever multi-step flow you are in
-
-*Coming next*
-Creating notes, and generating them from images, land in a later phase.
 """
 
 

@@ -107,23 +107,18 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """A plain message that is not a command.
 
-    `DEFAULT_TEXT_ACTION=quick` is a phase 6 feature, so it is refused with an
-    explanation rather than silently doing something else — a message the user
-    meant to capture must not quietly become a search.
+    Only reached when `DEFAULT_TEXT_ACTION=search`: with `quick`, the capture
+    handler runs first and stops the chain, so a message the user meant to keep
+    never also becomes a query. The check stays here as well, because handler
+    order is easy to change by accident and searching someone's private thought
+    is not a failure that announces itself.
     """
     message = update.effective_message
     if message is None or not message.text:
         return
 
     deps = deps_of(context)
-    if deps.settings.default_text_action == "quick":
-        await _reply(
-            update,
-            esc(
-                "Quick capture is not available yet — it lands with note creation. "
-                "Use /search <words> in the meantime."
-            ),
-        )
+    if deps.settings.default_text_action != "search":
         return
 
     await _present(update, context, await _service(deps).full_text(message.text))

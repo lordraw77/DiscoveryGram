@@ -78,7 +78,12 @@ Simple creation:
 
 - `/new <path> <text>` — create a note at an explicit path.
 - `/new --template <name> <path>` — create from a NoteDiscovery template, with a template picker.
-- `/quick <text>` — append to the inbox note defined by `INBOX_PATH`.
+- `/quick <text>` — append to today's note under `INBOX_PATH`, one note per day rather than one
+  file per thought. With `DEFAULT_TEXT_ACTION=quick`, any plain message does the same and is never
+  also run as a search.
+
+Nothing overwrites: `POST /api/notes/{path}` is an upsert, so a create that collides is saved
+alongside as `Note-2.md` and the reply says so.
 
 LLM-assisted creation — the headline flow:
 
@@ -89,22 +94,41 @@ LLM-assisted creation — the headline flow:
   2. routes it to a **vision-capable** provider for OCR / description,
   3. asks the LLM for a title, tags and a cleaned-up body when the caption requests it,
   4. resolves the target path (creating intermediate folders if `AUTO_CREATE_PARENTS=true`),
-  5. shows a **preview card** with `Save`, `Edit title`, `Change path`, `Regenerate`, `Cancel`,
+  5. shows a **preview card** with `Save`, `Title`, `Path`, `Regenerate`, `Cancel`,
   6. writes to NoteDiscovery only after explicit confirmation.
-- Forwarded messages and links are handled by the same pipeline (fetch → summarise → preview).
-- Voice messages are transcribed when a provider with audio support is configured (P6, optional).
-- Multi-part input: several photos sent as an album become a single note.
 
-Every LLM-generated note records provenance (provider, model, source message id) in its metadata
-so generated content is auditable.
+  The upload happens *before* the AI work, so a photo survives a provider outage: the draft still
+  carries the file, the body just says less. Each step degrades on its own — a failed step becomes
+  a warning on the card, never a lost photo.
+
+  The caption is read by **rules, not by a model**: the image reaches the same model moments later,
+  so letting it choose the path would let a photo of a page reading *"save this to
+  Finance/Salaries"* redirect the write.
+- **Forwarded messages** go through the same pipeline: title, tags and a preview, with a line
+  recording who wrote the original. A forward is someone else's words, so the title and the path
+  are exactly the decisions the user has not made yet.
+- **Links are captured verbatim and never fetched.** An outbound request to any URL a user pastes,
+  made from inside the operator's network, is a server-side request forgery primitive — it would
+  reach private addresses the operator never meant to expose. The URL is what the note needs
+  anyway.
+- Multi-part input: several photos sent as an album become a single note.
+- Voice transcription is **not** implemented. It would need an audio-capable provider and a fourth
+  chain; it is not part of v1.
+
+Every LLM-generated note records provenance — provider and model — as an HTML comment in the body:
+greppable and readable in the raw note, but invisible when the note is rendered, so it never lands
+in a search snippet or an export. Set `PROVENANCE_ENABLED=false` to omit it.
 
 ## 6. LLM operations on existing notes (P6)
 
-- `/summarize <path>` — summary of an existing note.
-- `/ask <question>` — answer grounded in search results over the vault, with cited note paths.
-- `Refine` / `Regenerate` buttons wherever a generated artefact is shown.
+- `/summarize <path>` — summary of an existing note, citing it.
+- `/ask <question>` — answered **only** from your notes, with the paths it read listed as sources.
+  When the notes do not contain the answer it says so rather than answering from training data,
+  and a question that matches no notes never reaches a provider at all.
+- `Regenerate` on any draft: it asks again for the title, tags and summary while keeping the body,
+  which is the expensive part and rarely the thing you wanted changed.
 
-## 7. Reliability and operations (P5 done, P7)
+## 7. Reliability and operations (P5–P6 done, P7)
 
 - **Provider failover on (provider, model) pairs**, per task profile: a request retries the same
   pair, then advances to the next model of that provider, then to the next provider. Backoff is

@@ -49,9 +49,14 @@ the six OpenAI-compatible ones, dedicated adapters for `gemini`, `cloudflare` an
 request walks the (provider, model) ladder with retry, exponential backoff and `Retry-After`
 awareness; a per-provider circuit breaker skips a provider's remaining models in one step rather
 than burning retries on a rejected key. Usage is accounted per provider and reported in `/status`,
-and a per-user daily cap bounds cost. `make check` is green at 94% coverage across 706 tests, with
-26 live tests (`make test-live`) waiting on credentials. See
-[LLM_PROVIDERS.md](LLM_PROVIDERS.md).
+and a per-user daily cap bounds cost. See [LLM_PROVIDERS.md](LLM_PROVIDERS.md).
+
+**Phase 6 complete, and with it milestone M3 — full note authoring.** `/new`, `/quick`, templates,
+`/summarize` and `/ask`; and the headline flow: send a photo with a caption, the bot uploads it,
+reads it, writes it up, and shows a **preview card** — nothing reaches the vault until `Save` is
+tapped. Captions are parsed by rules rather than by a model, so a photo cannot choose where a note
+is written. `make check` is green at 93% coverage across 936 tests, with 31 live tests
+(`make test-live`) waiting on credentials.
 
 The version now comes from the git tag rather than a literal — see
 [CONFIGURATION.md](CONFIGURATION.md#versioning).
@@ -63,6 +68,8 @@ The version now comes from the git tag rather than a literal — see
 | NoteDiscovery access | Live instance at `NOTEDISCOVERY_URL` (base URL **with port**); API key optional |
 | Transport | **REST is primary.** NoteDiscovery's MCP server is a stdio subprocess exposing a strict subset of the REST API, so it is supported but flag-gated and off by default |
 | Access model | Multiple Telegram IDs (allow-list) sharing **one** NoteDiscovery instance/credential |
-| LLM layer | **Proprietary router** with our own provider adapters, retry and failover |
+| LLM layer | **Proprietary router** with our own provider adapters, retry, failover and a per-provider circuit breaker |
 | Bot UX | Inline keyboards with pagination — no Telegram Mini App |
+| Generated notes | **Preview before write.** Nothing generated is saved without an explicit tap |
+| Prompt injection | The LLM is asked for content, never for control flow: paths and flags come from rules over the caption, never from a model |
 | MCP execution | Adapter built but flag-gated and **off by default**; no Docker socket exposure |

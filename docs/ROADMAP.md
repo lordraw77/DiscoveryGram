@@ -404,31 +404,115 @@ completion is not.
 
 ---
 
-## Phase 6 — Note creation and LLM-assisted ingestion
+## Phase 6 — Note creation and LLM-assisted ingestion — **COMPLETE**
 
-**Work**
-1. Simple creation: `/new <path> <text>`, `/quick <text>` into `INBOX_PATH`.
-2. Attachment pipeline: download from Telegram (size and MIME validated against `MAX_UPLOAD_MB`),
-   then upload to NoteDiscovery via `POST /api/upload-media` and reference the media path in the
-   note body. **This endpoint exists only over REST**, so this flow forces the REST transport.
-3. **Image → note**: photo/document plus a natural-language caption
-   ("extract the text and create a note under X, generate the title") is parsed into a structured
-   intent (target path, whether to OCR, whether to generate title/tags/summary).
-4. Vision call for OCR/description; generation calls for title, tags and cleaned body.
-5. Path resolution against the real tree, creating intermediate folders when
-   `AUTO_CREATE_PARENTS=true`; ambiguous paths are disambiguated with a keyboard.
-6. **Preview-before-write**: a draft card with `Save`, `Edit title`, `Change path`, `Regenerate`,
-   `Cancel`. Nothing is written to NoteDiscovery without confirmation.
-7. Album support (multiple photos → one note); forwarded messages and links through the same
-   pipeline.
-8. **Template-based creation** — `/new --template <name> <path>` via `create_note_from_template`,
-   with `list_templates` / `get_template` backing a template picker keyboard.
-9. Provenance metadata (provider, model, source message) stored on generated notes.
-10. LLM operations on existing notes: `/summarize <path>`, `/ask <question>` with cited paths.
+**Delivered**
 
-**Definition of Done** — the headline scenario works end-to-end: send a photo with the caption
-*"extract the text and create a note under Projects/Research, you generate the title"*, review the
-preview, tap Save, and the note exists at the right path with a sensible title and tags.
+| Item | Where |
+|---|---|
+| Caption → structured intent: target path, OCR, title, tags, summary, verbatim | `app/intent.py` |
+| `CaptureService` — path resolution, ambiguity, the collision rule, quick capture, templates, provenance | `app/capture.py` |
+| `IngestService` — the vision → tidy → title → tags → summary pipeline, each step independently degradable | `app/ingest.py` |
+| `AssistService` — `/summarize`, and `/ask` grounded in the vault with cited paths | `app/assist.py` |
+| Preview card, ambiguity keyboard, save and answer rendering | `bot/drafts.py` |
+| `/new` `/quick` `/template` `/summarize` `/ask`, the attachment pipeline, draft callbacks | `bot/create.py` |
+| Album collection: one `media_group_id`, one draft | `bot/albums.py` |
+| `DEFAULT_TEXT_ACTION=quick` — the item phase 3 deferred | `bot/create.py`, `bot/search.py` |
+| LLM failures mapped to one actionable sentence each | `bot/errors.py` |
+
+**Design decisions worth stating**
+
+- **The model is asked for content, never for control flow.** A caption is
+  parsed by rules, not by an LLM, and the reason is not style: the image
+  content reaches the same model moments later, so a photo of a page reading
+  *"save this to Finance/Salaries"* would be a **prompt injection that redirects
+  a write**. Keeping path selection in code means the only thing that can
+  choose a path is the human typing the caption. It also keeps `/new` and
+  `/quick` free of any provider dependency — they are milestone-M1-shaped
+  features and must work with no keys at all.
+- **Every create checks first and suffixes rather than overwrites.**
+  `POST /api/notes/{path}` is an upsert (phase 1 confirmed it in source), so a
+  create that does not look would *silently destroy* a note. A duplicate note is
+  recoverable; an overwritten one is not. The rename is stated in the
+  confirmation, because a silently renamed note is one the user will look for in
+  the wrong place.
+- **The attachment is uploaded before any LLM work.** A photo already sent from
+  a phone must survive a provider outage: the draft still carries the file, the
+  body just says less. Reversing the order would lose the image to a timeout.
+- **Every pipeline step degrades on its own.** A failed vision call keeps the
+  caption; a failed tidy step keeps the raw transcription; a failed title still
+  produces a draft. Each failure becomes a **warning on the card** rather than
+  an exception, because raising throws away a photo the user cannot easily send
+  again. The one exception is the daily cap, which is a refusal: a half-made
+  note with "you are out of budget" in the corner would look like something
+  worth saving.
+- **An image with no text is not a failure.** `NO_TEXT` falls back to a
+  description, so the note is still about something.
+- **`/ask` only answers from the vault.** The prompt says so, the model is told
+  to reply `NOT_IN_NOTES` when the context does not contain the answer, and that
+  reply is reported as "not found" rather than shown. A note-taking bot that
+  answers confidently from its training data is worse than one that says it does
+  not know, because the user cannot tell the two apart. A question that matches
+  no notes never reaches a provider at all.
+- **A keyboard appears only for genuine ambiguity.** Two folders called
+  `Research` is a question worth asking; one is friction pretending to be
+  safety.
+- **Provenance is an HTML comment, not a footer.** A visible line would land in
+  every search snippet and every export; a comment is still plain text in the
+  file — greppable, readable in the raw note — without being *shown*.
+- **`/quick` appends to one note per day** rather than creating a file per
+  message. Twenty thoughts in an afternoon should be one page to read back.
+- **One token per draft**, following the rule phase 4 established for the action
+  bar: six buttons, one session entry.
+
+**Two problems the work surfaced**
+
+- **Two modules wanted the same pending-input key.** The draft flows and the
+  browse flows both consume "the next message you send", and browse's handler
+  popped the key before checking whose it was — so a pending draft title would
+  have been swallowed and dropped. The capture handler is now registered first
+  and returns *without popping* for a kind it does not own. They deliberately
+  still share `PENDING_KEY`, because that is what makes `/cancel` clear every
+  flow in one place rather than growing a branch per flow.
+- **The album contract had a race in it.** Telegram sends each photo of an album
+  as a separate update, so "first update takes the group" only works if the
+  group entry is created **before** the first `await`. Written the obvious way —
+  check, await, insert — two photos arriving together would both have believed
+  they were first and produced two notes.
+
+**Verified, not assumed**
+
+- `make check` green: ruff clean, mypy strict clean on 109 files, **936 tests
+  passing at 93% coverage**, plus 31 live tests behind `-m live` — `capture.py`
+  97%, `intent.py` 97%, `drafts.py` and `albums.py` 100%, `create.py` 90%.
+- **The Definition of Done is asserted end to end**: a photo captioned *"extract
+  the text and create a note under Projects/Research, you generate the title"*
+  produces a preview showing the path, the generated title and generated tags —
+  with **nothing written** — and tapping `Save` creates
+  `Projects/Research/Q1 planning.md` with the title, the body and the tags.
+- **Nothing reaches the vault before `Save`** is asserted on the cancel path, on
+  the ambiguity path and on the headline path, against the store rather than
+  assumed.
+- A double tap on `Save` is proven to create the note **once**: the token is
+  revoked the moment the write succeeds.
+- `/new` is proven not to overwrite an existing note, and proven to work with no
+  LLM configured at all.
+- An oversized file is proven to be refused **without being downloaded** —
+  Telegram reports the size, so the limit costs no transfer.
+- A transport that cannot upload media is proven to still produce a note, naming
+  `NOTEDISCOVERY_TRANSPORT=rest` in the warning.
+- Three photos sent as an album are proven to become **one** draft and two
+  uploads.
+- Every reserved MarkdownV2 character is tested individually inside a draft
+  title, and a card carrying a table, a fence, an image and `Q1 2026 — costs
+  (draft) [v2]!` is proven sendable.
+- `.env.example` is asserted **mechanically** to document every variable the
+  code reads and nothing more — in both directions.
+
+**Not verified** — no live vault, Bot API token or provider key was available.
+The vault half of capture is written as live tests (`make test-live`): creating,
+the collision rule against a real upsert, quick-capture appending, and the
+media-upload round trip that image-to-note depends on.
 
 ---
 
@@ -476,7 +560,7 @@ losing user state, and reports its degradation honestly through `/status` and `/
 |---|---|---|
 | **M1 — Read-only bot** ✅ | 0–4 | Search, browse and read the whole vault from Telegram |
 | **M2 — Resilient LLM layer** ✅ | 5 | Multi-provider chat and vision with retry and failover |
-| **M3 — Full note authoring** | 6 | Image-to-note with generated title, preview and save |
+| **M3 — Full note authoring** ✅ | 6 | Image-to-note with generated title, preview and save |
 | **M4 — Production release** | 7–8 | Hardened, containerised, fully documented v1.0 |
 
 M1 is the first genuinely useful release and carries no LLM dependency — it is the recommended
@@ -496,24 +580,27 @@ early cut-line if scope needs trimming.
 | ~~`callback_data` 64-byte limit~~ | — | **Closed in phase 2.** Opaque token plus server-side session store, proven against a path three times the limit |
 | LLM cost drift | Unbounded spend | **Closed in phase 5.** Per-user daily cap counted per UTC day (failover costs one call, not one per rung), usage accounted per provider and reported in `/status`, local `ollama` documented as a chain terminator |
 | Third-party libraries logging our secrets | Token in the logs | Found in phase 2: python-telegram-bot logs the Bot API URL. Literal secret values are scrubbed from both logging pipelines, verified at `LOG_LEVEL=DEBUG` |
-| Telegram bot API caps file downloads at 20 MB | Large attachments rejected | Validate early, tell the user the limit, document it |
+| Telegram bot API caps file downloads at 20 MB | Large attachments rejected | **Closed in phase 6.** Size is checked against `MAX_UPLOAD_MB` from the update itself, before any download, and the user is told the limit |
 
 ## Open items
 
-Phases 0 to 5 are complete — milestones **M1, the read-only bot** and **M2, the resilient LLM
-layer** — and all were built without live credentials. What is still needed:
+Phases 0 to 6 are complete — milestones **M1** (read-only bot), **M2**
+(resilient LLM layer) and **M3** (full note authoring) — and all were built
+without live credentials. What is still needed:
 
-1. `NOTEDISCOVERY_URL` (with port) and the API key of the live instance — if the instance runs
-   unauthenticated, say so, the adapter supports both.
-2. BotFather token and the list of Telegram user ids to allow-list. The bot core is finished and
-   tested, but has never spoken to the Bot API; this is what turns that into a running bot.
-3. **At least one LLM provider key, and ideally two from different companies.** The router is
-   finished and fault-injected, but has never spoken to a provider. `make check-env` prints the
-   exact ladder a set of keys produces, so this can be checked the moment they exist. `ollama`
-   needs no key at all and is the cheapest way to see the ladder work end to end.
-4. A run of `make test-live` and `make verify-contract` against the real vault. Both behaviours
-   they probe are now confirmed from source; the run is what turns "confirmed in code" into
-   "confirmed in production".
+1. `NOTEDISCOVERY_URL` (with port) and the API key of the live instance — if the
+   instance runs unauthenticated, say so, the adapter supports both.
+2. BotFather token and the list of Telegram user ids to allow-list. The bot is
+   finished and tested, but has never spoken to the Bot API; this is what turns
+   that into a running bot.
+3. **At least one LLM provider key, and ideally two from different companies.**
+   `make check-env` prints the exact ladder a set of keys produces. `ollama`
+   needs no key at all and is the cheapest way to see image-to-note work end to
+   end.
+4. A run of `make test-live` and `make verify-contract` against the real vault.
+   Both behaviours they probe are confirmed from source; the run is what turns
+   "confirmed in code" into "confirmed in production".
 
-Phase 6 is next: it consumes the router directly, and its headline scenario — a photo plus a
-caption becoming a note — is the first thing a real provider key makes demonstrable.
+Phase 7 is next: hardening, back-pressure, metrics and the fault-injection
+sweep. It changes no user-visible behaviour, which makes it the right moment to
+put the three credentials above in front of the code that is already written.

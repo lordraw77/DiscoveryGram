@@ -311,17 +311,22 @@ async def test_a_plain_message_runs_a_search(
     assert "1 result" in bot.last_text
 
 
-async def test_quick_capture_is_refused_rather_than_silently_searching(
+async def test_the_search_handler_stays_silent_when_text_means_capture(
     settings: Settings, bot: FakeBot, sessions: MemorySessionStore
 ) -> None:
-    """A message meant as a note must not quietly become a search."""
+    """A message meant as a note must never also become a search.
+
+    The capture handler runs first and stops the chain, so this is a second
+    line of defence — but handler order is easy to change by accident, and
+    searching someone's private thought is not a failure that announces itself.
+    """
     quick = settings.model_copy(update={"default_text_action": "quick"})
-    context = make_context(quick, bot, sessions)
+    notes = StubNoteStore(hits=[hit(0)])
+    context = make_context(quick, bot, sessions, notes=notes)
 
     await text_message(make_update(bot, text="buy milk"), as_context(context))
 
-    assert "not available yet" in bot.last_text
-    assert "1 result" not in bot.last_text
+    assert bot.sent == []
 
 
 # --- Pagination -----------------------------------------------------------
