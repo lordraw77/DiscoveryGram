@@ -74,7 +74,9 @@ provider that was skipped.
 | `LLM_REQUEST_TIMEOUT_S` | `60` | Per-request timeout |
 | `LLM_CIRCUIT_FAILURE_THRESHOLD` | `5` | Failures before a provider's circuit opens |
 | `LLM_CIRCUIT_RESET_S` | `120` | Cool-down before a half-open retry |
-| `LLM_DAILY_CALL_LIMIT_PER_USER` | `100` | Cost guard, `0` disables |
+| `LLM_DAILY_CALL_LIMIT_PER_USER` | `100` | Cost guard: calls per user per UTC day, `0` disables. Bounds **spend** |
+| `LLM_USER_RATE_PER_MINUTE` | `20` | Burst guard: calls per user per rolling minute, `0` disables. Bounds **rate**. Keep it loose — one photo capture is several calls (vision, tidy, title, tags, summary), and a limit that refuses halfway through leaves a half-written draft |
+| `LLM_MAX_CONCURRENT_REQUESTS` | `8` | Provider calls in flight across the whole process, `0` disables the bound. Past it, requests queue rather than pile onto a provider that is already the slow part |
 
 Per provider — replace `<P>` with `NVIDIA`, `OPENROUTER`, `GROQ`, `GEMINI`, `CLOUDFLARE`,
 `CEREBRAS`, `MISTRAL`, `PUTER`, `OLLAMA`:
@@ -140,8 +142,51 @@ configures the numbers. Two chains, not four.
 |---|---|---|
 | `LOG_LEVEL` | `INFO` | Standard Python levels |
 | `LOG_FORMAT` | `json` | `json` or `console` |
-| `HEALTH_PORT` | `8080` | Port for `/healthz` and `/readyz` |
-| `METRICS_ENABLED` | `false` | Expose Prometheus metrics on the health port |
+| `HEALTH_PORT` | `8080` | Port for `/healthz`, `/readyz` and `/metrics` |
+| `METRICS_ENABLED` | `false` | Serve Prometheus metrics at `/metrics` on the health port |
+
+### The endpoints
+
+| Path | Meaning | Status codes |
+|---|---|---|
+| `/healthz` | Liveness: the process is up and the event loop responds | always `200` |
+| `/readyz` | Readiness: every **required** dependency answers | `200` ready, `503` not ready |
+| `/metrics` | Prometheus exposition | `200`, or `404` when `METRICS_ENABLED=false` |
+
+`/readyz` checks NoteDiscovery, the session backend and the Telegram updater, and reports the LLM
+ladder **without letting it fail readiness**: a bot whose every provider is cooling down can still
+search, browse, read and create notes, and pulling it out of service would turn a partial outage
+into a total one. That check appears in the body as `"llm": "degraded"` while the overall status
+stays `ready`.
+
+Verdicts are cached for two seconds and every check is bounded by a five-second timeout, so an
+aggressive probe cannot become load on the instance whose health it is asking about, and a
+dependency that hangs produces an honest `503` rather than a probe that times out.
+
+### The metrics
+
+Counters and histograms are recorded whether or not the endpoint is exposed, so turning
+`METRICS_ENABLED` on gives numbers from a running process rather than from zero. No label carries
+anything a user chooses — no note path, no query, no user id — so the series count is bounded by
+the configuration, not by the vault.
+
+| Metric | Type | Labels |
+|---|---|---|
+| `discoverygram_build_info` | gauge | `version`, `transport`, `mode` |
+| `discoverygram_updates_total` | counter | `outcome` (`accepted`, `rejected`) |
+| `discoverygram_handler_errors_total` | counter | `kind` (`expected`, `bug`) |
+| `discoverygram_notediscovery_requests_total` | counter | `method`, `outcome` (`ok`, a status code, `unreachable`) |
+| `discoverygram_notediscovery_request_seconds` | histogram | `method` |
+| `discoverygram_notediscovery_retries_total` | counter | `reason` |
+| `discoverygram_notediscovery_throttled_seconds_total` | counter | `bucket` |
+| `discoverygram_cache_events_total` | counter | `cache` (`tree`, `tags`), `event` (`hit`, `miss`, `invalidate`) |
+| `discoverygram_llm_attempts_total` | counter | `provider`, `outcome` |
+| `discoverygram_llm_latency_seconds` | histogram | `provider` |
+| `discoverygram_llm_requests_total` | counter | `task`, `outcome` (`ok`, `failed`, `degraded`) |
+| `discoverygram_llm_failovers_total` | counter | `task`, `provider` |
+| `discoverygram_llm_throttled_total` | counter | `limit` (`daily`, `per_minute`, `degraded`) |
+| `discoverygram_llm_circuit_open` | gauge | `provider`, `state` |
+| `discoverygram_llm_tokens_total` | counter | `provider`, `kind` |
 
 ## Versioning
 

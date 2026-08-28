@@ -21,6 +21,7 @@ from telegram import Update
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from discoverygram.bot.deps import deps_of
+from discoverygram.util import metrics
 from discoverygram.util.correlation import set_correlation_id
 from discoverygram.util.logging import get_logger
 
@@ -51,9 +52,11 @@ async def enforce_allow_list(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if settings.is_user_allowed(user_id) and settings.is_chat_allowed(chat_id):
         deps.count("updates_accepted")
+        metrics.UPDATES.inc(outcome="accepted")
         return
 
     deps.count("updates_rejected")
+    metrics.UPDATES.inc(outcome="rejected")
     log.warning(
         "update_rejected",
         user_id=user_id,

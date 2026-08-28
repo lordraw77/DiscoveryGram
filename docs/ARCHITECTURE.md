@@ -81,6 +81,7 @@ transports rather than duplicated in each:
 | Gap | Where | How |
 |---|---|---|
 | No tree endpoint | `adapters/tree.py` | Built from `GET /api/notes`, which returns the vault's **folder list** as well as its notes — so empty folders survive. Cached with `TREE_CACHE_TTL_S`, invalidated on every write, and guarded by a lock so ten concurrent `/browse` taps cause one vault scan |
+| Whole-vault reads on every tap | `adapters/cache.py` | One `TtlCache` type behind both hot reads — the tree and the tag index. A write invalidates; the TTL only bounds staleness caused by *another* writer (someone in the NoteDiscovery web UI). One loader runs per burst, and a failed load is never cached, so an outage does not outlive itself |
 | No literal search mode | `adapters/rest.py` + `ranking.py` | `/find` filters `/search` results case-sensitively. Snippets carry only ±15 characters of context, so near-misses are confirmed against the note body — bounded to 25 fetches |
 | No relevance score | `adapters/ranking.py` | Ordered by title hit, then exact/prefix title, then term frequency, then how early the first match sits, with recency as a tie-breaker. Ties break on path, so pagination stays stable across page turns |
 | HTML in snippets | `adapters/ranking.py` | `<mark class="search-highlight">` is stripped and the matched term kept separately, ready to be re-highlighted in Telegram's own syntax |
@@ -284,6 +285,9 @@ LlmRouter                             llm/router.py
   ├── circuit breaker     per provider, opens on repeated failures  llm/breaker.py
   ├── usage ledger        provider, model, latency, tokens, outcome  llm/usage.py
   ├── daily cap           LLM_DAILY_CALL_LIMIT_PER_USER, per UTC day
+  ├── burst limit         LLM_USER_RATE_PER_MINUTE, per rolling minute
+  ├── back-pressure       every circuit open -> refuse now, with the cool-down
+  ├── concurrency bound   LLM_MAX_CONCURRENT_REQUESTS, process-wide
   └── provider adapters
         OpenAiCompatibleClient  nvidia, openrouter, groq, cerebras,
                                 mistral, ollama          llm/base.py
@@ -501,7 +505,20 @@ mistaken for a release. `make release` refuses to stay quiet about that.
 - Hard allow-list: every update is rejected unless the Telegram user id is in
   `TELEGRAM_ALLOWED_USER_IDS`. Rejections are logged, not answered with details.
 - Secrets only from environment; `.env` is git-ignored, `.env.example` is committed.
-- Per-user rate limiting on LLM-backed commands to bound cost.
-- Uploaded files are size- and MIME-checked before being sent to a provider.
+- Per-user limits on LLM-backed commands: a daily cap that bounds cost, and a rolling per-minute
+  burst limit that bounds rate. Neither is consumed by a request that is refused.
+- Uploaded files are **size-checked before download** (Telegram reports the size in the update) and
+  **type-checked from their bytes** after it. A declared `image/png` that begins `%PDF` is refused;
+  a real PNG mislabelled as JPEG is corrected rather than rejected, because phones mislabel images
+  routinely.
+- An upload filename is a client-supplied string that travels onward as a multipart `filename`,
+  which a server may join onto a directory. It is reduced to one filesystem-safe segment —
+  `../../../etc/cron.d/evil.png` becomes `evil.png` — in `util/media.py`.
+- Every note path from a user, an LLM or a wiki-link goes through `util/paths.py`, which rejects
+  `..`, control characters and the characters NoteDiscovery's own `sanitize_filename` rejects.
+- In webhook mode, a missing `TELEGRAM_WEBHOOK_SECRET` is warned about loudly at startup: without
+  it the listener cannot tell a forged update from a real one, and a forged update can claim an
+  allow-listed user id.
+- `make audit` checks the installed dependency set against the advisory database.
 - Note content is sent to third-party LLM providers only for commands that require it; the
   provider chain is configurable so an `ollama`-only chain keeps data local.

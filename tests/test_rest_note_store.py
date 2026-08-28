@@ -673,3 +673,74 @@ async def test_search_literal_honours_the_limit(rest: RestNoteStore) -> None:
     )
 
     assert len(await rest.search_literal("docker", limit=2)) == 2
+
+
+# --- Phase 7: the hot-read caches ----------------------------------------
+
+
+@respx.mock
+async def test_the_tag_index_is_read_once(rest: RestNoteStore) -> None:
+    """`/tag` with no argument reads the whole index; twice is once too many."""
+    route = respx.get(f"{BASE}/api/tags").mock(return_value=httpx.Response(200, json=fx.TAGS))
+
+    await rest.list_tags()
+    await rest.list_tags()
+
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_a_created_note_invalidates_the_tag_index(rest: RestNoteStore) -> None:
+    """A note saved from Telegram carries tags, and /tag must show them now."""
+    tags = respx.get(f"{BASE}/api/tags").mock(return_value=httpx.Response(200, json=fx.TAGS))
+    respx.post(f"{BASE}/api/notes/Projects/New.md").mock(return_value=httpx.Response(200, json={}))
+
+    await rest.list_tags()
+    await rest.create_note("Projects/New.md", "#planning body")
+    await rest.list_tags()
+
+    assert tags.call_count == 2
+
+
+@respx.mock
+async def test_an_append_invalidates_the_tags_but_not_the_tree(rest: RestNoteStore) -> None:
+    """The path did not change; the tags may have."""
+    notes = respx.get(f"{BASE}/api/notes").mock(
+        return_value=httpx.Response(200, json=fx.NOTES_LISTING)
+    )
+    tags = respx.get(f"{BASE}/api/tags").mock(return_value=httpx.Response(200, json=fx.TAGS))
+    respx.patch(f"{BASE}/api/notes/Daily.md").mock(return_value=httpx.Response(200, json={}))
+
+    await rest.get_tree()
+    await rest.list_tags()
+    await rest.append_note("Daily.md", "#idea another thought")
+    await rest.get_tree()
+    await rest.list_tags()
+
+    assert notes.call_count == 1
+    assert tags.call_count == 2
+
+
+@respx.mock
+async def test_a_caller_cannot_corrupt_the_cached_tag_index(rest: RestNoteStore) -> None:
+    """The cache hands out its own dictionary, so a caller mutating one is harmless."""
+    respx.get(f"{BASE}/api/tags").mock(return_value=httpx.Response(200, json=fx.TAGS))
+
+    first = await rest.list_tags()
+    first["planning"] = 999
+
+    assert (await rest.list_tags())["planning"] == 2
+
+
+@respx.mock
+async def test_an_uploaded_filename_can_never_be_a_path(rest: RestNoteStore) -> None:
+    """A Telegram client chooses the filename; it must not choose a directory."""
+    route = respx.post(f"{BASE}/api/upload-media").mock(
+        return_value=httpx.Response(200, json=fx.UPLOAD)
+    )
+
+    await rest.upload_media("../../../etc/cron.d/evil.png", b"\x89PNG\r\n\x1a\n")
+
+    body = route.calls.last.request.content.decode("latin-1")
+    assert "../../../etc" not in body
+    assert "evil.png" in body

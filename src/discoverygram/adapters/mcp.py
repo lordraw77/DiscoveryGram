@@ -25,6 +25,7 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from discoverygram.adapters.cache import TtlCache
 from discoverygram.adapters.parsing import (
     parse_backlink,
     parse_config,
@@ -112,6 +113,9 @@ class McpNoteStore(NoteStore):
         self._exit_stack: Any = None
         self._tools: frozenset[str] = frozenset()
         self._tree = TreeCache(self._load_listing_for_tree, ttl_s=float(settings.tree_cache_ttl_s))
+        self._tags: TtlCache[dict[str, int]] = TtlCache(
+            self._load_tags, ttl_s=float(settings.tree_cache_ttl_s), name="tags"
+        )
 
     # --- Subprocess lifecycle --------------------------------------------
 
@@ -276,7 +280,7 @@ class McpNoteStore(NoteStore):
     async def create_note(self, path: str, content: str) -> NoteRef:
         note_path = normalise_note_path(path)
         await self._call("create_note", path=note_path, content=content)
-        self.invalidate_tree()
+        self._invalidate_after_write()
         return NoteRef.from_path(note_path)
 
     async def append_note(self, path: str, content: str, *, add_timestamp: bool = False) -> None:
@@ -288,15 +292,18 @@ class McpNoteStore(NoteStore):
             content=content,
             add_timestamp=add_timestamp,
         )
+        # The path is unchanged, so the tree still holds; appended #tags mean
+        # the tag index does not.
+        self._tags.invalidate()
 
     async def delete_note(self, path: str) -> None:
         await self._call("delete_note", path=normalise_note_path(path))
-        self.invalidate_tree()
+        self._invalidate_after_write()
 
     async def move_note(self, old_path: str, new_path: str) -> NoteRef:
         target = normalise_note_path(new_path)
         await self._call("move_note", old_path=normalise_note_path(old_path), new_path=target)
-        self.invalidate_tree()
+        self._invalidate_after_write()
         return NoteRef.from_path(target)
 
     async def update_note(self, path: str, content: str) -> NoteRef:
@@ -310,7 +317,7 @@ class McpNoteStore(NoteStore):
     async def create_folder(self, path: str) -> str:
         folder = normalise_folder_path(path)
         await self._call("create_folder", path=folder)
-        self.invalidate_tree()
+        self._invalidate_after_write()
         return folder
 
     async def move_folder(self, old_path: str, new_path: str) -> str:
@@ -349,6 +356,9 @@ class McpNoteStore(NoteStore):
         return ordered[:limit] if limit else ordered
 
     async def list_tags(self) -> dict[str, int]:
+        return dict(await self._tags.get())
+
+    async def _load_tags(self) -> dict[str, int]:
         return parse_tags(self._mapping(await self._call("list_tags")))
 
     async def get_notes_by_tag(
@@ -382,7 +392,7 @@ class McpNoteStore(NoteStore):
     async def create_note_from_template(self, template_name: str, note_path: str) -> NoteRef:
         target = normalise_note_path(note_path)
         await self._call("create_note_from_template", template_name=template_name, note_path=target)
-        self.invalidate_tree()
+        self._invalidate_after_write()
         return NoteRef.from_path(target)
 
     # --- REST-only surface -----------------------------------------------
@@ -418,6 +428,11 @@ class McpNoteStore(NoteStore):
 
     def invalidate_tree(self) -> None:
         self._tree.invalidate()
+
+    def _invalidate_after_write(self) -> None:
+        """Both hot reads, on every write — the same rule the REST adapter follows."""
+        self._tree.invalidate()
+        self._tags.invalidate()
 
     async def recent_notes(self, *, days: int = 7, limit: int = 20) -> list[NoteRef]:
         """MCP has a real tool for this, unlike REST."""

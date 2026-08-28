@@ -516,22 +516,125 @@ media-upload round trip that image-to-note depends on.
 
 ---
 
-## Phase 7 — Hardening and production readiness
+## Phase 7 — Hardening and production readiness — **COMPLETE**
 
-**Work**
-1. Caching of hot reads (note tree, tag list) with explicit invalidation on write.
-2. Per-user rate limiting on LLM-backed commands; back-pressure when providers are degraded.
-3. Concurrency review: no blocking calls in the event loop, bounded task groups, clean shutdown.
-4. Observability: optional Prometheus metrics (updates handled, NoteDiscovery latency, LLM latency
-   and failover counts, error rates); `/readyz` reflecting real dependency health.
-5. Security pass: secret redaction in logs, input sanitisation, upload validation, path traversal
-   checks on note paths, dependency audit.
-6. Resilience testing: NoteDiscovery down, MCP session dropped, all providers failing, Telegram API
-   throttling.
-7. Coverage target ≥ 80% on application and adapter layers.
+**Delivered**
 
-**Definition of Done** — the service survives every fault-injection scenario without crashing or
-losing user state, and reports its degradation honestly through `/status` and `/readyz`.
+| Item | Where |
+|---|---|
+| One TTL cache type behind both hot reads, single-flight and write-invalidated | `adapters/cache.py`, `adapters/tree.py` |
+| Tag index cached on both transports; every write drops tree **and** tags, an append drops tags only | `adapters/rest.py`, `adapters/mcp.py` |
+| Per-user burst limit (`LLM_USER_RATE_PER_MINUTE`), rolling window | `llm/usage.py` |
+| Back-pressure: a fully short-circuited ladder is refused with its cool-down, before anything is spent | `llm/router.py`, `llm/breaker.py` |
+| Process-wide bound on provider calls in flight (`LLM_MAX_CONCURRENT_REQUESTS`) | `llm/router.py` |
+| Prometheus exposition with no Prometheus dependency: counters, gauges, histograms | `util/metrics.py` |
+| `/metrics` on the health port, gated by `METRICS_ENABLED`; instruments always live | `health.py` |
+| `/readyz` with required and *reported* checks, concurrent, timeout-bounded, briefly cached | `health.py` |
+| Shutdown that runs every teardown step whatever any of them does | `__main__.py` |
+| Upload validation from the bytes, and a filename reduced to one safe segment | `util/media.py`, `bot/create.py`, `adapters/rest.py` |
+| `LlmThrottled` and `LlmDegraded`, each mapped to one actionable sentence | `ports/llm_errors.py`, `bot/errors.py` |
+| `make audit` against the advisory database | `Makefile` |
+
+**Design decisions worth stating**
+
+- **A degraded AI ladder is not a readiness failure.** `/readyz` reports it and
+  stays `ready`. An orchestrator that pulls the bot out of service because a
+  third-party model provider is having a bad afternoon has turned a partial
+  outage into a total one — search, browse, read and `/new` need no provider at
+  all. That is what the `required=False` check exists for.
+- **Instruments are always recording; only the endpoint is gated.** Turning
+  `METRICS_ENABLED` on gives numbers from a running process rather than from
+  zero, and no counter site in the codebase has to ask whether it is switched
+  on.
+- **No metric label is anything a user chooses.** Not a note path, not a query,
+  not a user id — only provider names, HTTP methods and outcomes from fixed
+  sets. A label taken from user input is how a metrics endpoint becomes an
+  out-of-memory, and the note path was *right there* in the obvious version of
+  the NoteDiscovery latency metric.
+- **Two limits, because they answer different questions.** The daily cap bounds
+  spend; a rolling per-minute limit bounds rate. A daily cap alone lets one user
+  empty their allowance in ten seconds and hold the shared provider connection
+  pool while doing it. The burst default is deliberately loose (20), because one
+  photo capture is *five* calls and a limit that refuses halfway through leaves
+  a half-written draft the user cannot finish.
+- **Refusing costs nothing.** Throttling, the daily cap and back-pressure all
+  check *before* consuming, and consume only once a provider is actually going
+  to be called. Charging a user for a request the bot declined to attempt would
+  be indefensible.
+- **Prometheus without `prometheus_client`.** The exposition format is a few
+  lines of text and the whole need here is three instrument types with
+  low-cardinality labels. The dependency would have brought a second global
+  registry, a second concurrency model and a WSGI server to keep out of the
+  event loop, to produce the same forty lines.
+- **The bytes decide what a file is.** `mime_type` and `file_name` are both
+  claims made by the sending client. A declared `image/png` that begins `%PDF`
+  is refused before it costs a vision call; a real PNG mislabelled as JPEG is
+  corrected instead, because phones mislabel images constantly and refusing
+  those would be a bug, not a control.
+
+**Three problems the work surfaced**
+
+- **The back-pressure check was stealing the half-open probe.** Asking the
+  breaker `allows()` to find out whether a provider is down *is* taking its
+  single probe permit — that is the method's documented side effect. The first
+  version of the check therefore consumed the one attempt that decides whether a
+  provider has recovered, and the request that followed found the circuit shut
+  again. The breaker grew `blocks()`, a genuinely read-only predicate, and the
+  rule is now explicit: a look must never be a call.
+- **An append changes the tags but not the tree.** The obvious invalidation —
+  one method, both caches, every write — is wrong in one direction and right in
+  the other: appending to an existing note cannot move it, so dropping the tree
+  would cost a full vault listing for nothing, while `#tags` in the appended
+  text mean the tag index really is stale. They are invalidated separately, and
+  the asymmetry is asserted.
+- **A failed load must not poison the cache.** Assigning the loader's result
+  before it succeeds — or caching the exception — would have kept the bot broken
+  after the vault came back. The value is assigned only on success, the
+  exception propagates, and the next caller tries again.
+
+**Concurrency review** — no blocking call reaches the event loop: no
+`time.sleep`, no synchronous file or socket I/O, no fire-and-forget
+`create_task` anywhere in `src/`. The album buffer creates its group entry
+**before** its first `await`, which is what makes "first update wins" true. The
+caches serialise their loaders on a lock, the throttle limiter on a lock per
+bucket, and the router now bounds provider calls process-wide. Shutdown runs
+every step even when one raises, so a collaborator that fails to close cannot
+leave the next one holding a socket.
+
+**Verified, not assumed**
+
+- `make check` green: ruff clean, mypy strict clean on 112 files, **1030 tests
+  passing at 94% coverage** — comfortably past the 80% target, with
+  `health.py`, `usage.py` and `media.py` at 100%, `router.py` at 99% and
+  `metrics.py` at 99%.
+- **Every fault-injection scenario is a test** (`tests/test_resilience.py`):
+  NoteDiscovery refusing connections, flapping between 503 and 200, rate-limiting
+  with a `Retry-After`, a Redis that raises on `ping`, every provider failing,
+  and Telegram answering a notification with 429.
+- The full degradation arc is asserted end to end: repeated failures trip the
+  circuit, the next request is refused **without calling anything**, and after
+  the cool-down the same provider serves again.
+- A failed write is proven **not** to invalidate the caches, and an outage is
+  proven not to be cached — the vault coming back needs no restart.
+- A readiness check that hangs is proven to answer `503` within its timeout
+  rather than becoming a probe that times out, and three slow checks are proven
+  to run concurrently.
+- `/metrics` is proven to be a `404` when disabled, and the exposition is
+  asserted against the format itself: cumulative buckets, a trailing newline,
+  and a label value containing `"`, `\` and a newline that cannot break the
+  scrape.
+- A filename of `../../../etc/cron.d/evil.png` is proven to reach NoteDiscovery
+  as `evil.png`, asserted against the multipart body actually sent.
+- A PDF announced as `image/png` is proven to be refused **after** download and
+  **before** any upload or provider call.
+- The half-open probe is proven to survive the back-pressure check — the
+  regression that motivated `blocks()`.
+
+**Not verified** — still no live instance, Bot API token or provider key. The
+metrics endpoint has been scraped by a test client, never by a Prometheus; the
+fault-injection scenarios are injected at the adapter seams rather than by
+unplugging a real NoteDiscovery. `make audit` needs network access and has not
+been run here.
 
 ---
 
@@ -578,15 +681,19 @@ early cut-line if scope needs trimming.
 | ~~Unbounded `/api/search` with no default limit~~ | — | **Closed in phase 3.** Explicit `limit` enforced in the adapter and asserted in the service; a full page is reported as truncated so the user knows results were cut |
 | Telegram formatting and size limits | Broken rendering on real notes | Centralised renderer, every reply asserted MarkdownV2-safe against every reserved character individually, tables, fences and 4096-character boundaries. Has already caught an unsendable `/status` and a faulty assertion |
 | ~~`callback_data` 64-byte limit~~ | — | **Closed in phase 2.** Opaque token plus server-side session store, proven against a path three times the limit |
-| LLM cost drift | Unbounded spend | **Closed in phase 5.** Per-user daily cap counted per UTC day (failover costs one call, not one per rung), usage accounted per provider and reported in `/status`, local `ollama` documented as a chain terminator |
+| ~~LLM cost drift~~ | — | **Closed in phase 5, tightened in phase 7.** Per-user daily cap counted per UTC day (failover costs one call, not one per rung), plus a rolling per-minute burst limit and a process-wide bound on calls in flight. Usage is accounted per provider and reported in `/status`; local `ollama` is documented as a chain terminator |
+| ~~A provider outage becomes a queue of waiting users~~ | — | **Closed in phase 7.** A fully short-circuited ladder is refused immediately with its cool-down, spending nothing, and the degradation is named in `/status`, in `/readyz` and in `discoverygram_llm_circuit_open` |
+| ~~A metrics label taken from user input~~ | — | **Closed in phase 7.** No label carries a note path, a query or a user id — only provider names, methods and outcomes from fixed sets. Asserted by the label set each instrument is constructed with |
+| ~~A client-supplied filename used as a path~~ | — | **Closed in phase 7.** Reduced to one filesystem-safe segment before it leaves the process, asserted against the multipart body actually sent |
 | Third-party libraries logging our secrets | Token in the logs | Found in phase 2: python-telegram-bot logs the Bot API URL. Literal secret values are scrubbed from both logging pipelines, verified at `LOG_LEVEL=DEBUG` |
 | Telegram bot API caps file downloads at 20 MB | Large attachments rejected | **Closed in phase 6.** Size is checked against `MAX_UPLOAD_MB` from the update itself, before any download, and the user is told the limit |
 
 ## Open items
 
-Phases 0 to 6 are complete — milestones **M1** (read-only bot), **M2**
-(resilient LLM layer) and **M3** (full note authoring) — and all were built
-without live credentials. What is still needed:
+Phases 0 to 7 are complete — milestones **M1** (read-only bot), **M2**
+(resilient LLM layer) and **M3** (full note authoring), with phase 7's hardening
+on top — and all were built without live credentials. Phase 8 (packaging,
+documentation and release) is what remains for **M4**. What is still needed:
 
 1. `NOTEDISCOVERY_URL` (with port) and the API key of the live instance — if the
    instance runs unauthenticated, say so, the adapter supports both.
@@ -601,6 +708,7 @@ without live credentials. What is still needed:
    Both behaviours they probe are confirmed from source; the run is what turns
    "confirmed in code" into "confirmed in production".
 
-Phase 7 is next: hardening, back-pressure, metrics and the fault-injection
-sweep. It changes no user-visible behaviour, which makes it the right moment to
-put the three credentials above in front of the code that is already written.
+Phase 8 is next: packaging, the documentation set and the release. Phase 7
+changed no user-visible behaviour beyond three new refusal messages, so the
+three credentials above are still what stands between a bot that is written and
+a bot that is running.

@@ -1,6 +1,6 @@
 # DiscoveryGram — development and release tasks.
 .DEFAULT_GOAL := help
-.PHONY: help version install lock lint format typecheck test test-live check run check-env \
+.PHONY: help version install lock lint format typecheck test test-live check run check-env audit \
         verify-contract docker/build docker/run docker/stop docker/logs docker/shell \
         clean release
 
@@ -44,6 +44,9 @@ test: ## Run the test suite (excludes live tests)
 
 test-live: ## Run tests against a real NoteDiscovery instance (needs .env)
 	$(UV) run pytest -m live
+
+audit: ## Check installed dependencies against the advisory database (needs network)
+	$(UV) run --with pip-audit pip-audit --strict
 
 check: lint typecheck test ## Everything CI runs
 

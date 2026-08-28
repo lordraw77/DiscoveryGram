@@ -1,11 +1,16 @@
-"""Usage accounting and the per-user daily cap.
+"""Usage accounting and the per-user limits.
 
-Two jobs that share one clock:
+Three jobs that share one clock:
 
 * **the ledger** — every attempt, successful or not, is recorded with its
   provider, model, task, latency, tokens and outcome. `/status` reads the
   aggregate; the log carries the individual records.
-* **the cap** — `LLM_DAILY_CALL_LIMIT_PER_USER` calls per user per UTC day.
+* **the daily cap** — `LLM_DAILY_CALL_LIMIT_PER_USER` calls per user per UTC
+  day, which bounds *spend*;
+* **the burst limit** — `LLM_USER_RATE_PER_MINUTE` calls per user per rolling
+  minute, which bounds *rate*. The two answer different questions: a daily cap
+  alone lets one user empty their allowance in ten seconds and hold the
+  provider connection pool while doing it.
 
 The cap counts *requests*, not attempts: one `/summarize` that fails over
 across four rungs is one call against the user's budget. Charging per attempt
@@ -19,13 +24,13 @@ concern, when Redis is already on the request path.
 from __future__ import annotations
 
 import time
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from discoverygram.llm.plan import TaskProfile
 from discoverygram.ports.llm import Usage
-from discoverygram.ports.llm_errors import LlmQuotaExceeded
+from discoverygram.ports.llm_errors import LlmQuotaExceeded, LlmThrottled
 from discoverygram.util.logging import get_logger
 
 log = get_logger(__name__)
@@ -268,4 +273,79 @@ class DailyCallCap:
         return _DAY_S - (now % _DAY_S)
 
 
-__all__ = ["DailyCallCap", "ProviderUsage", "UsageLedger", "UsageRecord"]
+class UserRateLimiter:
+    """`LLM_USER_RATE_PER_MINUTE`, as a rolling window per user.
+
+    Rolling rather than fixed: a fixed minute lets a user spend the whole
+    allowance at 10:59:59 and the whole of the next one at 11:00:01, which is
+    twice the burst the operator configured.
+
+    A limit of 0 disables it. The default is deliberately loose, because one
+    photo capture is *several* calls — vision, tidy, title, tags, summary — and
+    a limit that refuses halfway through a capture would leave the user with a
+    half-written draft and no way to finish it.
+    """
+
+    def __init__(
+        self,
+        limit_per_minute: int,
+        *,
+        window_s: float = 60.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._limit = max(limit_per_minute, 0)
+        self._window_s = window_s
+        self._clock = clock
+        self._calls: dict[int, deque[float]] = {}
+
+    @property
+    def enabled(self) -> bool:
+        return self._limit > 0
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    def _window(self, user_id: int) -> deque[float]:
+        calls = self._calls.setdefault(user_id, deque())
+        cutoff = self._clock() - self._window_s
+        while calls and calls[0] <= cutoff:
+            calls.popleft()
+        # Users who stopped asking must not stay in the dictionary forever.
+        if not calls:
+            del self._calls[user_id]
+            return deque()
+        return calls
+
+    def used(self, user_id: int) -> int:
+        return len(self._window(user_id))
+
+    def check(self, user_id: int | None) -> None:
+        """Raise `LlmThrottled` when this user is asking too fast. Read-only."""
+        if not self.enabled or user_id is None:
+            return
+        calls = self._window(user_id)
+        if len(calls) < self._limit:
+            return
+        retry_after = max(0.0, self._window_s - (self._clock() - calls[0]))
+        raise LlmThrottled(
+            f"You are sending AI requests faster than the {self._limit} per minute "
+            f"this bot allows. Try again in {max(1, int(retry_after + 0.999))}s.",
+            retry_after=retry_after,
+        )
+
+    def consume(self, user_id: int | None) -> None:
+        if not self.enabled or user_id is None:
+            return
+        calls = self._window(user_id)
+        calls.append(self._clock())
+        self._calls[user_id] = calls
+
+
+__all__ = [
+    "DailyCallCap",
+    "ProviderUsage",
+    "UsageLedger",
+    "UsageRecord",
+    "UserRateLimiter",
+]

@@ -27,10 +27,13 @@ from discoverygram.ports.errors import (
     Unsupported,
 )
 from discoverygram.ports.llm_errors import (
+    LlmDegraded,
     LlmError,
     LlmNoProvider,
     LlmQuotaExceeded,
+    LlmThrottled,
 )
+from discoverygram.util import metrics
 from discoverygram.util.logging import get_logger
 from discoverygram.util.paths import InvalidPath
 
@@ -70,9 +73,10 @@ def user_message(error: BaseException) -> str:
     if isinstance(error, NoteStoreError):
         return f"Your notes instance had a problem: {error}"
 
-    # The daily cap is the user's own budget, so it is stated plainly rather
-    # than dressed up as a failure — nothing is broken.
-    if isinstance(error, LlmQuotaExceeded):
+    # The daily cap, the burst limit and a cooling-down ladder are all stated
+    # plainly rather than dressed up as failures: nothing is broken, and each
+    # message already carries the wait and what to do about it.
+    if isinstance(error, LlmQuotaExceeded | LlmThrottled | LlmDegraded):
         return str(error)
     # A missing chain is a configuration gap, and the message already names the
     # variable to set; repeating it as "something went wrong" would hide that.
@@ -132,6 +136,7 @@ async def handle_error(update: object, context: object) -> None:
         deps = deps_of(context)
     except RuntimeError:
         deps = None
+    metrics.HANDLER_ERRORS.inc(kind="expected" if is_expected(error) else "bug")
     if deps is not None:
         deps.count("errors")
 

@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 
+from discoverygram.adapters.cache import TtlCache
 from discoverygram.adapters.parsing import (
     parse_config,
     parse_graph,
@@ -68,8 +70,10 @@ from discoverygram.ports.model import (
     VaultStats,
 )
 from discoverygram.ports.note_store import NoteStore
+from discoverygram.util import metrics
 from discoverygram.util.correlation import get_correlation_id
 from discoverygram.util.logging import get_logger
+from discoverygram.util.media import safe_filename
 from discoverygram.util.paths import encode_path, normalise_folder_path, normalise_note_path
 
 log = get_logger(__name__)
@@ -108,6 +112,14 @@ class RestNoteStore(NoteStore):
             self._load_listing_for_tree,
             ttl_s=float(settings.tree_cache_ttl_s),
         )
+        # The tag index shares the tree's TTL: both are whole-vault reads that
+        # only a write can invalidate early, and an operator tuning staleness
+        # is tuning one idea, not two.
+        self._tags = TtlCache(
+            self._load_tags,
+            ttl_s=float(settings.tree_cache_ttl_s),
+            name="tags",
+        )
 
     # --- Transport -------------------------------------------------------
 
@@ -128,6 +140,7 @@ class RestNoteStore(NoteStore):
         if bucket:
             waited = await self._limiter.acquire(bucket)
             if waited:
+                metrics.NOTESTORE_THROTTLED.inc(waited, bucket=bucket)
                 log.debug("throttled", bucket=bucket, waited_s=round(waited, 2))
 
         headers = {}
@@ -142,6 +155,7 @@ class RestNoteStore(NoteStore):
         last_error: Exception | None = None
 
         for attempt in range(1, attempts + 1):
+            started = time.monotonic()
             try:
                 response = await self._client.request(
                     method,
@@ -154,6 +168,7 @@ class RestNoteStore(NoteStore):
                 )
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
+                self._observe(method, started, outcome="unreachable")
                 if attempt >= attempts:
                     raise Unavailable(
                         f"NoteDiscovery is unreachable at {self._base_url}: {exc}"
@@ -162,13 +177,17 @@ class RestNoteStore(NoteStore):
                 continue
 
             if response.status_code in _RETRYABLE_STATUS and attempt < attempts:
+                self._observe(method, started, outcome=str(response.status_code))
                 await self._backoff(
                     attempt, method=method, path=path, reason=str(response.status_code)
                 )
                 continue
 
             if response.status_code >= 400:
+                self._observe(method, started, outcome=str(response.status_code))
                 raise self._to_error(response)
+
+            self._observe(method, started, outcome="ok")
 
             if not expect_json:
                 return response.content
@@ -187,10 +206,23 @@ class RestNoteStore(NoteStore):
             + (f": {last_error}" if last_error else "")
         )
 
+    @staticmethod
+    def _observe(method: str, started: float, *, outcome: str) -> None:
+        """One call, one latency observation, one outcome.
+
+        The path is deliberately not a label: `/api/notes/{path}` carries a
+        user-chosen note path, and a metric labelled by it would grow a series
+        per note in the vault.
+        """
+        elapsed = time.monotonic() - started
+        metrics.NOTESTORE_LATENCY.observe(elapsed, method=method)
+        metrics.NOTESTORE_REQUESTS.inc(method=method, outcome=outcome)
+
     async def _backoff(self, attempt: int, *, method: str, path: str, reason: str) -> None:
         # Full jitter: spreads a thundering herd of retries after an outage.
         ceiling = min(2.0 ** (attempt - 1), 30.0)
         delay = random.uniform(0.0, ceiling)  # noqa: S311 — jitter, not cryptography
+        metrics.NOTESTORE_RETRIES.inc(reason=reason)
         log.warning(
             "notediscovery_retry",
             method=method,
@@ -307,7 +339,7 @@ class RestNoteStore(NoteStore):
             bucket="note_write",
             json={"content": content},
         )
-        self.invalidate_tree()
+        self._invalidate_after_write()
         return NoteRef.from_path(note_path)
 
     async def append_note(self, path: str, content: str, *, add_timestamp: bool = False) -> None:
@@ -320,11 +352,14 @@ class RestNoteStore(NoteStore):
             bucket="note_append",
             json={"content": content, "add_timestamp": add_timestamp},
         )
+        # The tree is unchanged — the note already existed at this path — but
+        # appended text can carry new #tags, so the tag index is not.
+        self._tags.invalidate()
 
     async def delete_note(self, path: str) -> None:
         note_path = normalise_note_path(path)
         await self._request("DELETE", f"/api/notes/{encode_path(note_path)}", bucket="note_delete")
-        self.invalidate_tree()
+        self._invalidate_after_write()
 
     async def move_note(self, old_path: str, new_path: str) -> NoteRef:
         source = normalise_note_path(old_path)
@@ -335,7 +370,7 @@ class RestNoteStore(NoteStore):
             bucket="note_move",
             json={"oldPath": source, "newPath": target},
         )
-        self.invalidate_tree()
+        self._invalidate_after_write()
         return NoteRef.from_path(target)
 
     async def update_note(self, path: str, content: str) -> NoteRef:
@@ -355,7 +390,7 @@ class RestNoteStore(NoteStore):
     async def create_folder(self, path: str) -> str:
         folder = normalise_folder_path(path)
         await self._request("POST", "/api/folders", bucket="folder_create", json={"path": folder})
-        self.invalidate_tree()
+        self._invalidate_after_write()
         return folder
 
     async def move_folder(self, old_path: str, new_path: str) -> str:
@@ -367,7 +402,7 @@ class RestNoteStore(NoteStore):
             bucket="folder_move",
             json={"oldPath": source, "newPath": target},
         )
-        self.invalidate_tree()
+        self._invalidate_after_write()
         return target
 
     async def rename_folder(self, old_path: str, new_path: str) -> str:
@@ -379,13 +414,13 @@ class RestNoteStore(NoteStore):
             bucket="folder_rename",
             json={"oldPath": source, "newPath": target},
         )
-        self.invalidate_tree()
+        self._invalidate_after_write()
         return target
 
     async def delete_folder(self, path: str) -> None:
         folder = normalise_folder_path(path)
         await self._request("DELETE", f"/api/folders/{encode_path(folder)}", bucket="folder_delete")
-        self.invalidate_tree()
+        self._invalidate_after_write()
 
     # --- Search and tags -------------------------------------------------
 
@@ -439,6 +474,10 @@ class RestNoteStore(NoteStore):
         return ordered[:limit] if limit else ordered
 
     async def list_tags(self) -> dict[str, int]:
+        """The tag index, cached: `/tag` with no argument reads all of it."""
+        return dict(await self._tags.get())
+
+    async def _load_tags(self) -> dict[str, int]:
         payload = self._expect_mapping(await self._request("GET", "/api/tags"), "/api/tags")
         return parse_tags(payload)
 
@@ -490,7 +529,7 @@ class RestNoteStore(NoteStore):
             bucket="template_create",
             json={"templateName": template_name, "notePath": target},
         )
-        self.invalidate_tree()
+        self._invalidate_after_write()
         if isinstance(payload, Mapping) and payload.get("path"):
             return parse_note_ref({"path": str(payload["path"])})
         return NoteRef.from_path(target)
@@ -509,12 +548,16 @@ class RestNoteStore(NoteStore):
             raise InvalidRequest(
                 f"{filename} is larger than the {self._settings.max_upload_mb} MB limit."
             )
+        # The filename travels as a multipart part name, which the far side may
+        # join onto a directory. It is reduced to one boring segment here, at
+        # the last point before it leaves the process.
+        name = safe_filename(filename)
         payload = self._expect_mapping(
             await self._request(
                 "POST",
                 "/api/upload-media",
                 bucket="media_upload",
-                files={"file": (filename, data, content_type)},
+                files={"file": (name, data, content_type)},
                 data={"note_path": note_path},
             ),
             "/api/upload-media",
@@ -559,6 +602,17 @@ class RestNoteStore(NoteStore):
 
     def invalidate_tree(self) -> None:
         self._tree.invalidate()
+
+    def _invalidate_after_write(self) -> None:
+        """Every write drops both hot reads.
+
+        Creating, moving or deleting changes the shape of the vault *and*
+        usually its tags, and getting this wrong is not a stale number on a
+        dashboard — it is a note the user just created that `/browse` cannot
+        find.
+        """
+        self._tree.invalidate()
+        self._tags.invalidate()
 
     async def recent_notes(self, *, days: int = 7, limit: int = 20) -> list[NoteRef]:
         """No `/api/recent` exists; the note listing already carries `modified`."""

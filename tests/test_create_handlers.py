@@ -507,6 +507,47 @@ async def test_a_non_image_document_is_refused_with_the_types_it_accepts(
     assert bot.downloaded == []
 
 
+async def test_a_file_that_is_not_really_an_image_is_refused(
+    settings: Settings, bot: FakeBot, sessions: MemorySessionStore
+) -> None:
+    """`mime_type` is what the sending client claimed; the bytes are the fact."""
+    store = StubStore()
+    context = make_context(settings, bot, sessions, store=store)
+    bot.file_bytes = b"%PDF-1.7 not an image at all"
+
+    await attachment_message(make_document_update(bot, mime_type="image/png"), as_context(context))
+
+    assert "does not look like an image" in bot.last_text
+    assert store.uploads == []
+
+
+async def test_a_mislabelled_image_is_corrected_rather_than_refused(
+    settings: Settings, bot: FakeBot, sessions: MemorySessionStore
+) -> None:
+    """Phones mislabel images routinely; a real PNG called a JPEG is still readable."""
+    store = StubStore()
+    context = make_context(settings, bot, sessions, store=store)
+    bot.file_bytes = b"\x89PNG\r\n\x1a\n" + b"body"
+
+    await attachment_message(make_document_update(bot, mime_type="image/jpeg"), as_context(context))
+
+    assert store.uploads == ["scan.png"]
+
+
+async def test_an_upload_filename_from_a_client_is_reduced_to_one_segment(
+    settings: Settings, bot: FakeBot, sessions: MemorySessionStore
+) -> None:
+    store = StubStore()
+    context = make_context(settings, bot, sessions, store=store)
+
+    await attachment_message(
+        make_document_update(bot, file_name="../../../etc/cron.d/evil.png"),
+        as_context(context),
+    )
+
+    assert store.uploads == ["evil.png"]
+
+
 async def test_an_image_document_goes_through_the_same_pipeline(
     settings: Settings, bot: FakeBot, sessions: MemorySessionStore
 ) -> None:

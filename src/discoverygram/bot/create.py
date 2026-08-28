@@ -50,6 +50,7 @@ from discoverygram.bot.tokens import CallbackTokens
 from discoverygram.ports.errors import InvalidRequest, NoteStoreError, Unsupported
 from discoverygram.ports.llm import SUPPORTED_IMAGE_TYPES, ImagePart
 from discoverygram.util.logging import get_logger
+from discoverygram.util.media import safe_filename, sniff_image
 
 log = get_logger(__name__)
 
@@ -314,7 +315,28 @@ async def _extract_attachment(message: Message, deps: BotDeps) -> dict[str, Any]
         )
         return None
 
-    return {"data": data, "mime": mime, "name": name, "caption": message.caption or ""}
+    # What Telegram *called* the file is a claim; what the bytes start with is
+    # a fact. A mismatch is not necessarily an attack — phones mislabel HEIC as
+    # JPEG all the time — but sending a non-image to a vision model wastes a
+    # provider call and stores something in the vault under a name that lies.
+    sniffed = sniff_image(data)
+    if sniffed is None:
+        await _reply(
+            message,
+            esc("That file does not look like an image I can read, whatever it is named."),
+            to_message=True,
+        )
+        return None
+    if sniffed != mime:
+        log.info("attachment_type_corrected", declared=mime, actual=sniffed)
+        mime = sniffed
+
+    return {
+        "data": data,
+        "mime": mime,
+        "name": safe_filename(name),
+        "caption": message.caption or "",
+    }
 
 
 async def _build_draft_from_images(

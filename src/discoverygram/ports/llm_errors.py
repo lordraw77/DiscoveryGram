@@ -126,6 +126,41 @@ class LlmNoProvider(LlmError):
     """
 
 
+class LlmThrottled(LlmError):
+    """The caller is asking faster than `LLM_USER_RATE_PER_MINUTE` allows.
+
+    A *local* refusal, not a provider one: nothing was called, nothing was
+    spent, and the answer is a short wait. It exists because a daily cap alone
+    lets one user spend an entire allowance — and saturate the provider
+    connection pool everyone shares — in ten seconds.
+    """
+
+    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class LlmDegraded(LlmError):
+    """Every provider that could serve this task is short-circuited.
+
+    Back-pressure, and the one case where failing immediately is kinder than
+    trying: the breaker has already established that these providers are down,
+    so walking the ladder would spend the user's budget on calls that are known
+    in advance to fail.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        providers: tuple[str, ...] = (),
+        retry_after: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.providers = providers
+        self.retry_after = retry_after
+
+
 class LlmQuotaExceeded(LlmError):
     """The caller has spent their `LLM_DAILY_CALL_LIMIT_PER_USER` for today."""
 
@@ -137,11 +172,13 @@ class LlmQuotaExceeded(LlmError):
 __all__ = [
     "LlmAuthError",
     "LlmBadResponse",
+    "LlmDegraded",
     "LlmError",
     "LlmInvalidRequest",
     "LlmNoProvider",
     "LlmQuotaExceeded",
     "LlmRateLimited",
+    "LlmThrottled",
     "LlmTimeout",
     "LlmUnavailable",
     "LlmUnsupported",

@@ -11,10 +11,10 @@ Telegram shows up in `/browse` immediately rather than after the TTL expires.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Awaitable, Callable, Iterable
 
+from discoverygram.adapters.cache import TtlCache
 from discoverygram.ports.model import NoteListing, NoteRef, TreeNode
 from discoverygram.util.paths import parent_folder
 
@@ -85,8 +85,12 @@ def breadcrumb(path: str) -> tuple[tuple[str, str], ...]:
     return tuple(crumbs)
 
 
-class TreeCache:
-    """TTL cache around one `NoteListing` fetch, safe under concurrent callers."""
+class TreeCache(TtlCache[TreeNode]):
+    """The folder tree, rebuilt from one `NoteListing` and cached.
+
+    A `TtlCache` whose loader does the assembling, so the invalidation rules
+    live in one place for every hot read rather than one per cache.
+    """
 
     def __init__(
         self,
@@ -95,34 +99,8 @@ class TreeCache:
         ttl_s: float,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._loader = loader
-        self._ttl_s = ttl_s
-        self._clock = clock
-        self._lock = asyncio.Lock()
-        self._tree: TreeNode | None = None
-        self._loaded_at = 0.0
+        async def load() -> TreeNode:
+            listing = await loader()
+            return build_tree(listing.notes, listing.folders)
 
-    @property
-    def is_fresh(self) -> bool:
-        if self._tree is None:
-            return False
-        if self._ttl_s <= 0:
-            return False
-        return (self._clock() - self._loaded_at) < self._ttl_s
-
-    async def get(self, *, refresh: bool = False) -> TreeNode:
-        if not refresh and self.is_fresh and self._tree is not None:
-            return self._tree
-
-        async with self._lock:
-            # Another caller may have refreshed it while we waited for the lock.
-            if not refresh and self.is_fresh and self._tree is not None:
-                return self._tree
-            listing = await self._loader()
-            self._tree = build_tree(listing.notes, listing.folders)
-            self._loaded_at = self._clock()
-            return self._tree
-
-    def invalidate(self) -> None:
-        self._tree = None
-        self._loaded_at = 0.0
+        super().__init__(load, ttl_s=ttl_s, name="tree", clock=clock)

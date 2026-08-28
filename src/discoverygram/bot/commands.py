@@ -305,6 +305,17 @@ def _llm_lines(router: LlmRouter | None, *, user_id: int | None) -> list[str]:
                 "Your daily quota", _text(f"{remaining} of {router.cap.limit} left"), indent=True
             )
         )
+    # The burst limit is the one a user meets without warning — several
+    # requests in a row and the next is refused — so it is named rather than
+    # left to be discovered.
+    if router.rate.enabled and user_id is not None:
+        lines.append(
+            _field(
+                "Your rate limit",
+                _text(f"{router.rate.used(user_id)} of {router.rate.limit} used this minute"),
+                indent=True,
+            )
+        )
 
     return lines
 

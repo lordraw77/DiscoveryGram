@@ -61,8 +61,10 @@ Redis is only needed when `SESSION_BACKEND=redis`:
 docker compose --profile redis up -d
 ```
 
-The container exposes `/healthz` (liveness) and `/readyz` (readiness — reports whether
-NoteDiscovery is reachable) on `HEALTH_PORT`, and carries a Docker `HEALTHCHECK`.
+The container exposes `/healthz` (liveness), `/readyz` (readiness — NoteDiscovery, the session
+backend and the Telegram updater; a degraded AI ladder is reported but does not fail readiness) and
+`/metrics` (Prometheus, when `METRICS_ENABLED=true`) on `HEALTH_PORT`, and carries a Docker
+`HEALTHCHECK`.
 
 ## Verifying the NoteDiscovery contract
 

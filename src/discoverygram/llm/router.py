@@ -14,6 +14,21 @@ order:
    refused prompt) abandons the rung with no retries at all. Anything else is
    retried at the rung and then, on exhaustion, advances one rung.
 
+Three things happen before the first rung is even considered, and all three are
+refusals that cost nothing:
+
+* the caller's **daily cap** and **per-minute burst limit** are checked, and
+  neither is consumed unless a provider is actually going to be called;
+* if **every** provider on the ladder is short-circuited, the request is
+  refused immediately with the cool-down, rather than walking rungs the breaker
+  has already established are down. That is the back-pressure: a degraded
+  provider must not turn into a queue of Telegram users waiting on timeouts.
+
+In flight, `LLM_MAX_CONCURRENT_REQUESTS` bounds how many provider calls the
+process makes at once. Sixteen concurrent captures times five pipeline steps is
+not a burst any free-tier provider enjoys, and queueing is cheaper than being
+rate-limited.
+
 Two properties this ordering is designed to give:
 
 * a Telegram user waits through *retries* only for failures that plausibly go
@@ -33,9 +48,15 @@ from dataclasses import dataclass
 from discoverygram.config import Settings
 from discoverygram.llm.breaker import CircuitBreaker, CircuitStatus
 from discoverygram.llm.plan import TASK_DEFAULTS, Attempt, TaskProfile
-from discoverygram.llm.usage import DailyCallCap, ProviderUsage, UsageLedger
+from discoverygram.llm.usage import DailyCallCap, ProviderUsage, UsageLedger, UserRateLimiter
 from discoverygram.ports.llm import Completion, LlmClient, Message
-from discoverygram.ports.llm_errors import LlmError, LlmNoProvider, LlmRateLimited
+from discoverygram.ports.llm_errors import (
+    LlmDegraded,
+    LlmError,
+    LlmNoProvider,
+    LlmRateLimited,
+)
+from discoverygram.util import metrics
 from discoverygram.util.logging import get_logger
 
 log = get_logger(__name__)
@@ -105,6 +126,8 @@ class LlmRouter:
         breaker: CircuitBreaker | None = None,
         ledger: UsageLedger | None = None,
         cap: DailyCallCap | None = None,
+        rate: UserRateLimiter | None = None,
+        concurrency: asyncio.Semaphore | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         jitter: Callable[[float], float] | None = None,
     ) -> None:
@@ -117,6 +140,14 @@ class LlmRouter:
         )
         self._ledger = ledger or UsageLedger()
         self._cap = cap or DailyCallCap(settings.llm_daily_call_limit_per_user)
+        self._rate = rate or UserRateLimiter(settings.llm_user_rate_per_minute)
+        # Created eagerly: a semaphore built on first use would be built inside
+        # whichever task got there first, and 3.12 binds it to that loop.
+        self._concurrency = concurrency or (
+            asyncio.Semaphore(settings.llm_max_concurrent_requests)
+            if settings.llm_max_concurrent_requests > 0
+            else None
+        )
         self._sleep = sleep
         # Full jitter by default; injectable so tests are not flaky.
         self._jitter = jitter or (lambda ceiling: random.uniform(0.0, ceiling))  # noqa: S311
@@ -131,6 +162,10 @@ class LlmRouter:
     def cap(self) -> DailyCallCap:
         return self._cap
 
+    @property
+    def rate(self) -> UserRateLimiter:
+        return self._rate
+
     def ladder(self, task: TaskProfile) -> TaskLadder:
         return self._ladders.get(task, TaskLadder(task=task))
 
@@ -138,12 +173,30 @@ class LlmRouter:
         """Whether this task has anything to call at all."""
         return self.ladder(task).usable
 
-    def status(self) -> RouterStatus:
+    def _providers(self) -> list[str]:
         providers: list[str] = []
         for ladder in self._ladders.values():
             for provider in ladder.providers:
                 if provider not in providers:
                     providers.append(provider)
+        return providers
+
+    def _publish_circuits(self) -> None:
+        """Mirror the breaker into the gauge, so a tripped circuit is alertable.
+
+        `/status` names a degraded provider to whoever typed the command; this
+        is the same fact for whoever is not in the chat at 3am.
+        """
+        for circuit in self._breaker.snapshot(self._providers()):
+            metrics.LLM_CIRCUIT_STATE.set(
+                0.0 if circuit.healthy else 1.0,
+                provider=circuit.provider,
+                state=circuit.state.value,
+            )
+
+    def status(self) -> RouterStatus:
+        providers = self._providers()
+        self._publish_circuits()
         return RouterStatus(
             ladders=tuple(self._ladders.values()),
             circuits=tuple(self._breaker.snapshot(providers)),
@@ -168,24 +221,27 @@ class LlmRouter:
         """Answer `messages`, walking the ladder until something works.
 
         Raises `LlmNoProvider` when nothing was configured, `LlmQuotaExceeded`
-        when the caller is out of daily budget, and otherwise the error from
-        the **last** rung tried — the most informative one, because earlier
-        rungs were abandoned in favour of it.
+        when the caller is out of daily budget, `LlmThrottled` when they are
+        asking too fast, `LlmDegraded` when every provider is short-circuited,
+        and otherwise the error from the **last** rung tried — the most
+        informative one, because earlier rungs were abandoned in favour of it.
         """
         ladder = self.ladder(task)
         if not ladder.usable:
             raise LlmNoProvider(self._nothing_configured(ladder))
 
-        # Checked before the cap is consumed, and consumed before the first
-        # provider call: a request that never reaches a provider must not cost
-        # the user a call.
-        self._cap.check(user_id)
+        # Three refusals that cost nothing, checked before anything is
+        # consumed: a request that never reaches a provider must not cost the
+        # user a call, and must not be charged against their burst budget.
+        self._check_limits(user_id)
+        self._check_back_pressure(task, ladder)
 
         defaults = TASK_DEFAULTS[task]
         tokens = defaults.max_tokens if max_tokens is None else max_tokens
         warmth = defaults.temperature if temperature is None else temperature
 
         self._cap.consume(user_id)
+        self._rate.consume(user_id)
 
         skipped_providers: set[str] = set()
         last: LlmError | None = None
@@ -222,6 +278,10 @@ class LlmRouter:
             if isinstance(outcome, Completion):
                 self._breaker.record_success(attempt.provider)
                 self._ledger.note_request(succeeded=True)
+                metrics.LLM_REQUESTS.inc(task=task.value, outcome="ok")
+                if position > 1:
+                    metrics.LLM_FAILOVERS.inc(task=task.value, provider=attempt.provider)
+                self._publish_circuits()
                 log.info(
                     "llm_request_served",
                     task=task.value,
@@ -249,7 +309,63 @@ class LlmRouter:
                 self._breaker.record_failure(attempt.provider, reason=type(outcome.error).__name__)
 
         self._ledger.note_request(succeeded=False)
+        metrics.LLM_REQUESTS.inc(task=task.value, outcome="failed")
+        self._publish_circuits()
         raise self._exhausted(task, ladder, last)
+
+    # --- Refusals that cost nothing --------------------------------------
+
+    def _check_limits(self, user_id: int | None) -> None:
+        """The two per-user limits, in the order that gives the better message.
+
+        The daily cap first: a user who is out of budget for the day should be
+        told that, not asked to wait a minute for an allowance that is already
+        spent.
+        """
+        try:
+            self._cap.check(user_id)
+        except LlmError:
+            metrics.LLM_THROTTLED.inc(limit="daily")
+            raise
+        try:
+            self._rate.check(user_id)
+        except LlmError:
+            metrics.LLM_THROTTLED.inc(limit="per_minute")
+            raise
+
+    def _check_back_pressure(self, task: TaskProfile, ladder: TaskLadder) -> None:
+        """Refuse immediately when every provider on the ladder is open.
+
+        Walking the ladder here would call nothing — every rung is skipped —
+        and end in "every model failed", which reads like the request was
+        tried. Saying *cooling down, N seconds* instead is both true and
+        actionable, and it is what stops a provider outage from becoming a
+        queue of users waiting on a bot that looks stuck.
+        """
+        providers = [provider for provider in ladder.providers if provider in self._clients]
+        # `blocks`, not `allows`: asking `allows` would consume the half-open
+        # probe of a provider that is due for one, and a look must never be a
+        # call.
+        if not providers or not all(self._breaker.blocks(provider) for provider in providers):
+            return
+
+        circuits = self._breaker.snapshot(providers)
+        remaining = min((circuit.opens_remaining_s for circuit in circuits), default=0.0)
+        self._publish_circuits()
+        metrics.LLM_THROTTLED.inc(limit="degraded")
+        metrics.LLM_REQUESTS.inc(task=task.value, outcome="degraded")
+        log.warning(
+            "llm_back_pressure",
+            task=task.value,
+            providers=providers,
+            retry_in_s=round(remaining, 1),
+        )
+        raise LlmDegraded(
+            "Every AI provider is cooling down after repeated failures. "
+            f"Try again in {max(1, int(remaining + 0.999))}s — /status has the details.",
+            providers=tuple(providers),
+            retry_after=remaining,
+        )
 
     # --- One rung --------------------------------------------------------
 
@@ -271,7 +387,8 @@ class LlmRouter:
         for try_number in range(1, tries + 1):
             started = time.monotonic()
             try:
-                completion = await client.complete(
+                completion = await self._call(
+                    client,
                     model=attempt.model,
                     messages=messages,
                     max_tokens=max_tokens,
@@ -280,6 +397,8 @@ class LlmRouter:
             except LlmError as error:
                 elapsed = time.monotonic() - started
                 last = error
+                metrics.LLM_ATTEMPTS.inc(provider=attempt.provider, outcome=_outcome_name(error))
+                metrics.LLM_LATENCY.observe(elapsed, provider=attempt.provider)
                 self._ledger.record_failure(
                     provider=attempt.provider,
                     model=attempt.model,
@@ -322,11 +441,40 @@ class LlmRouter:
                 latency_s=completion.latency_s,
                 user_id=user_id,
             )
+            metrics.LLM_ATTEMPTS.inc(provider=attempt.provider, outcome="ok")
+            metrics.LLM_LATENCY.observe(completion.latency_s, provider=attempt.provider)
+            metrics.TOKENS.inc(
+                completion.usage.prompt_tokens or 0, provider=attempt.provider, kind="prompt"
+            )
+            metrics.TOKENS.inc(
+                completion.usage.completion_tokens or 0,
+                provider=attempt.provider,
+                kind="completion",
+            )
             return completion
 
         # Unreachable: the loop returns on both the success and failure paths.
         assert last is not None
         return _RungOutcome(error=last, attempts=tries)
+
+    async def _call(
+        self,
+        client: LlmClient,
+        *,
+        model: str,
+        messages: Sequence[Message],
+        max_tokens: int,
+        temperature: float,
+    ) -> Completion:
+        """One provider call, inside the process-wide concurrency bound."""
+        if self._concurrency is None:
+            return await client.complete(
+                model=model, messages=messages, max_tokens=max_tokens, temperature=temperature
+            )
+        async with self._concurrency:
+            return await client.complete(
+                model=model, messages=messages, max_tokens=max_tokens, temperature=temperature
+            )
 
     def _delay(self, try_number: int, error: LlmError) -> float | None:
         """How long to wait before repeating this rung, or `None` for "don't".

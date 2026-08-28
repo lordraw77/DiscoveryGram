@@ -91,7 +91,8 @@ sent as `X-API-Key`.
 |---|---|---|
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 | `LOG_FORMAT` | `json` | `json` for log shipping, `console` for human reading |
-| `HEALTH_PORT` | `8080` | Port serving `/healthz` and `/readyz` |
+| `HEALTH_PORT` | `8080` | Port serving `/healthz`, `/readyz` and `/metrics` |
+| `METRICS_ENABLED` | `false` | Serve Prometheus metrics at `/metrics` |
 | `NOTEDISCOVERY_TIMEOUT` | `30` | Per-request timeout in seconds |
 | `NOTEDISCOVERY_VERIFY_TLS` | `true` | Set `false` only for a self-signed internal certificate |
 | `SESSION_BACKEND` | `memory` | `redis` to survive restarts and run more than one replica |

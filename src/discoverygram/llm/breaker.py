@@ -102,6 +102,20 @@ class CircuitBreaker:
         log.info("llm_circuit_half_open", provider=provider)
         return True
 
+    def blocks(self, provider: str) -> bool:
+        """Whether a call would be refused right now — **without** consuming the probe.
+
+        `allows` cannot answer this question: asking it *is* taking the
+        half-open probe, so a caller that used it merely to look would spend
+        the one attempt that decides whether the provider is back.
+        """
+        circuit = self._circuits.get(provider)
+        if circuit is None or circuit.opened_at is None:
+            return False
+        if self._clock() - circuit.opened_at < self._reset_s:
+            return True
+        return circuit.probe_in_flight
+
     def state(self, provider: str) -> CircuitState:
         circuit = self._circuits.get(provider)
         if circuit is None or circuit.opened_at is None:

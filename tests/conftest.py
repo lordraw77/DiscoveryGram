@@ -50,6 +50,9 @@ def env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "LLM_CIRCUIT_FAILURE_THRESHOLD",
         "LLM_CIRCUIT_RESET_S",
         "LLM_DAILY_CALL_LIMIT_PER_USER",
+        "LLM_USER_RATE_PER_MINUTE",
+        "LLM_MAX_CONCURRENT_REQUESTS",
+        "METRICS_ENABLED",
         # Every `<PROVIDER>_*` variable, so a developer's real keys and model
         # lists can never reach a test's ladder.
         *(

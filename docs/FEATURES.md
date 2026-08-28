@@ -137,6 +137,10 @@ in a search snippet or an export. Set `PROVENANCE_ENABLED=false` to omit it.
   provider's remaining models in one step, rather than burning retries on models that cannot
   answer. Recovery is probed with a single half-open call.
 - **Per-user daily cap** on LLM-backed commands (`LLM_DAILY_CALL_LIMIT_PER_USER`, per UTC day).
+- **Per-user burst limit** (`LLM_USER_RATE_PER_MINUTE`, rolling window) and a process-wide bound on
+  provider calls in flight (`LLM_MAX_CONCURRENT_REQUESTS`).
+- **Back-pressure**: when every provider is short-circuited, the request is refused immediately
+  with the cool-down instead of walking rungs that are known to be down.
   Failover is free: one request is one call however many rungs it took.
 - `/status` — NoteDiscovery reachability, active transport, the first rung that would serve each
   task, any open circuit with its remaining cool-down, per-provider usage, and the caller's

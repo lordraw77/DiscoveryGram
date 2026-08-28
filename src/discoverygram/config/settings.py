@@ -122,6 +122,13 @@ class Settings(BaseSettings):
     llm_circuit_failure_threshold: int = Field(default=5, gt=0)
     llm_circuit_reset_s: float = Field(default=120.0, gt=0)
     llm_daily_call_limit_per_user: int = Field(default=100, ge=0)
+    # Burst limit, per user, per rolling minute. The daily cap bounds spend;
+    # this bounds rate. Loose by default: one photo capture is several calls.
+    llm_user_rate_per_minute: int = Field(default=20, ge=0)
+    # How many provider calls the whole process may have in flight. Beyond
+    # this, requests queue rather than pile onto a provider that is already
+    # the slow part. 0 disables the bound.
+    llm_max_concurrent_requests: int = Field(default=8, ge=0)
     # How many tags a generation step may put on a note. A model asked for
     # "some tags" will happily return twenty, and a vault's tag index is
     # shared: over-tagging one note degrades browsing for every other.

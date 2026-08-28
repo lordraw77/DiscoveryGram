@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
+from collections.abc import Awaitable, Callable
 from typing import NoReturn
 
 from pydantic import ValidationError
@@ -30,6 +31,8 @@ from discoverygram.bot.application import BotRunner, build_application, build_de
 from discoverygram.config import Settings
 from discoverygram.health import HealthServer, ReadinessCheck
 from discoverygram.llm.factory import build_router
+from discoverygram.llm.router import LlmRouter
+from discoverygram.util import metrics
 from discoverygram.util.logging import configure_logging, get_logger
 
 log = get_logger(__name__)
@@ -86,9 +89,24 @@ async def run() -> None:
     # any configured provider was skipped, before anything else happens.
     llm = build_router(settings)
 
-    health = HealthServer(port=settings.health_port, version=__version__)
+    metrics.BUILD_INFO.set(
+        1.0,
+        version=__version__,
+        transport=settings.notediscovery_transport.value,
+        mode=settings.telegram_mode.value,
+    )
+
+    health = HealthServer(
+        port=settings.health_port,
+        version=__version__,
+        metrics_enabled=settings.metrics_enabled,
+    )
     health.register_check("notediscovery", notes.health)
     health.register_check("sessions", sessions.ping)
+    # Reported, never required. A bot whose providers are all cooling down can
+    # still search, browse, read and create notes — pulling it out of service
+    # would turn a partial outage into a total one.
+    health.register_check("llm", _llm_check(llm), required=False)
     await health.start()
 
     # Not fatal when it fails: the health endpoint reports the degradation
@@ -110,11 +128,26 @@ async def run() -> None:
         await stop.wait()
     finally:
         log.info("shutting_down")
-        await runner.stop()
-        await health.stop()
-        await sessions.aclose()
-        await llm.aclose()
-        await notes.aclose()
+        # Each step is independent: one collaborator that fails to close must
+        # not leave the next one holding a socket, or a SIGTERM that should
+        # have been a clean stop becomes a container the orchestrator kills.
+        await _shutdown(
+            ("telegram", runner.stop),
+            ("health", health.stop),
+            ("sessions", sessions.aclose),
+            ("llm", llm.aclose),
+            ("notediscovery", notes.aclose),
+        )
+        log.info("shutdown_complete")
+
+
+async def _shutdown(*steps: tuple[str, Callable[[], Awaitable[None]]]) -> None:
+    """Run every teardown step, in order, whatever any of them does."""
+    for name, close in steps:
+        try:
+            await close()
+        except Exception as exc:
+            log.warning("shutdown_step_failed", step=name, error=str(exc))
 
 
 async def _start_telegram(runner: BotRunner) -> None:
@@ -137,6 +170,22 @@ async def _start_telegram(runner: BotRunner) -> None:
     except TelegramError as exc:
         log.error("telegram_start_failed", error=str(exc))
         raise SystemExit(1) from exc
+
+
+def _llm_check(router: LlmRouter) -> ReadinessCheck:
+    """Degraded when every configured provider is short-circuited.
+
+    A router with nothing configured is *not* degraded: no providers is a
+    supported deployment (milestone M1), not a fault to report forever.
+    """
+
+    async def check() -> bool:
+        status = router.status()
+        if not status.circuits:
+            return True
+        return not all(not circuit.healthy for circuit in status.circuits)
+
+    return check
 
 
 def _telegram_check(runner: BotRunner) -> ReadinessCheck:

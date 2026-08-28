@@ -220,6 +220,17 @@ class BotRunner:
         url = settings.telegram_webhook_url.rstrip("/")
         path = settings.telegram_webhook_path.strip("/")
 
+        if not settings.telegram_webhook_secret:
+            # Without it, anything that can reach the port can post a forged
+            # update — including one that claims to come from an allow-listed
+            # user id, which is the only thing standing between a stranger and
+            # the vault.
+            log.warning(
+                "telegram_webhook_without_secret",
+                detail="Set TELEGRAM_WEBHOOK_SECRET: the listener cannot tell "
+                "a forged update from a real one without it.",
+            )
+
         await updater.start_webhook(  # type: ignore[attr-defined]
             listen=settings.telegram_webhook_listen,
             port=settings.telegram_webhook_port,

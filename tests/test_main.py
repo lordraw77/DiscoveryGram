@@ -98,16 +98,19 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     sessions = RecordingSessions()
     health = SimpleNamespace(
         checks={},
+        required={},
         started=False,
         stopped=False,
     )
 
     class FakeHealthServer:
-        def __init__(self, port: int, version: str) -> None:
+        def __init__(self, port: int, version: str, *, metrics_enabled: bool = False) -> None:
             self.port = port
+            self.metrics_enabled = metrics_enabled
 
-        def register_check(self, name: str, check: Any) -> None:
+        def register_check(self, name: str, check: Any, *, required: bool = True) -> None:
             health.checks[name] = check
+            health.required[name] = required
 
         async def start(self) -> None:
             health.started = True
@@ -142,7 +145,11 @@ async def test_startup_brings_up_health_before_probing_the_instance(
     await main_module.run()
 
     assert wired["health"].started is True
-    assert set(wired["health"].checks) == {"notediscovery", "sessions", "telegram"}
+    assert set(wired["health"].checks) == {"notediscovery", "sessions", "telegram", "llm"}
+    # The AI layer is reported, never required: a bot with every provider down
+    # can still search, browse and create.
+    assert wired["health"].required["llm"] is False
+    assert wired["health"].required["notediscovery"] is True
 
 
 async def test_shutdown_releases_everything_it_acquired(env: None, wired: dict[str, Any]) -> None:
