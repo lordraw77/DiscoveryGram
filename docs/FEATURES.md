@@ -1,6 +1,8 @@
 # Feature Catalogue
 
-Legend: **P** = phase in which the feature lands (see [ROADMAP.md](ROADMAP.md)).
+Every feature below is **shipped**. The `P` marker records the phase it landed in, which is
+useful when reading [ROADMAP.md](ROADMAP.md) or [../CHANGELOG.md](../CHANGELOG.md) alongside it.
+For these features in use, with the bot's actual replies, see [WALKTHROUGH.md](WALKTHROUGH.md).
 
 ## 1. NoteDiscovery access (P1)
 
@@ -27,7 +29,7 @@ disabled cleanly rather than failing per request. Details in
   would never fit in Telegram's 64-byte `callback_data`.
 - Friendly errors: one actionable sentence in the chat, the full detail in the logs.
 
-## 3. Search (P3) — **shipped**
+## 3. Search (P3)
 
 | Command | Behaviour |
 |---|---|
@@ -47,7 +49,7 @@ it was, a search-disabled instance says so, and an empty result set says what wa
 
 Per-hit *open* buttons arrive with the note renderer in P4.
 
-## 4. Navigation (P4) — **shipped**
+## 4. Navigation (P4)
 
 - `/browse` — enter the note tree at the root; folders and notes as inline buttons. The tree is
   derived client-side from `GET /api/notes`, since NoteDiscovery exposes no tree endpoint.
@@ -128,7 +130,7 @@ in a search snippet or an export. Set `PROVENANCE_ENABLED=false` to omit it.
 - `Regenerate` on any draft: it asks again for the title, tags and summary while keeping the body,
   which is the expensive part and rarely the thing you wanted changed.
 
-## 7. Reliability and operations (P5–P6 done, P7)
+## 7. Reliability and operations (P5–P7)
 
 - **Provider failover on (provider, model) pairs**, per task profile: a request retries the same
   pair, then advances to the next model of that provider, then to the next provider. Backoff is
@@ -147,7 +149,19 @@ in a search snippet or an export. Set `PROVENANCE_ENABLED=false` to omit it.
   remaining quota.
 - `/cancel` — abort any multi-step flow.
 - Friendly error messages; full stack traces only in logs.
-- `/healthz` and `/readyz` HTTP endpoints for container orchestration.
+- `/healthz` and `/readyz` HTTP endpoints for container orchestration. Readiness distinguishes
+  **required** checks (NoteDiscovery, sessions, the Telegram updater) from **reported** ones: a
+  degraded AI ladder appears in the body without failing readiness, because search, browse, read
+  and create need no provider at all.
+- **Prometheus metrics** at `/metrics`, gated by `METRICS_ENABLED`. Instruments record whether or
+  not the endpoint is exposed, and no label carries a note path, a query or a user id — the series
+  count is bounded by configuration, not by the vault.
+- **Upload validation from the bytes.** A PDF announced as `image/png` is refused after download
+  and before any provider call; a real PNG mislabelled as JPEG is corrected instead, because phones
+  mislabel images constantly. Client-supplied filenames are reduced to one safe segment.
+- **Caches that invalidate asymmetrically**: a write drops the folder tree *and* the tag index; an
+  append drops the tags only, because appending to a note cannot move it. A failed write
+  invalidates nothing, and an outage is never cached.
 
 ## 8. Explicitly out of scope (v1)
 

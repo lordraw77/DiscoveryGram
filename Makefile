@@ -1,12 +1,17 @@
 # DiscoveryGram — development and release tasks.
 .DEFAULT_GOAL := help
 .PHONY: help version install lock lint format typecheck test test-live check run check-env audit \
-        verify-contract docker/build docker/run docker/stop docker/logs docker/shell \
-        clean release
+        verify-contract docker/build docker/buildx docker/push docker/pins \
+        docker/run docker/stop docker/logs docker/shell clean release
 
 IMAGE       ?= lordraw/discoverygram
 UV          ?= uv
 COMPOSE     ?= docker compose
+# The architectures the release image is published for. QEMU emulates whatever
+# the build host is not, so adding one here costs build minutes, not code.
+PLATFORMS   ?= linux/amd64,linux/arm64
+EXPORTED_REQS := .requirements-audit.txt
+BASE_IMAGES := ghcr.io/astral-sh/uv:python3.12-bookworm-slim python:3.12-slim-bookworm
 
 # One source of truth for the version: the git tag, derived by the same code the
 # build backend uses. `:=` so the shell runs once per make invocation, not once
@@ -45,8 +50,14 @@ test: ## Run the test suite (excludes live tests)
 test-live: ## Run tests against a real NoteDiscovery instance (needs .env)
 	$(UV) run pytest -m live
 
-audit: ## Check installed dependencies against the advisory database (needs network)
-	$(UV) run --with pip-audit pip-audit --strict
+audit: ## Check locked dependencies against the advisory database (needs network)
+	# Audit the exported lockfile, not the environment: the environment contains
+	# discoverygram itself, which is editable and not on PyPI, and `--strict`
+	# turns both of those into an error rather than a skip.
+	$(UV) export --format requirements-txt --no-emit-project --no-hashes --all-extras \
+		--quiet -o $(EXPORTED_REQS)
+	$(UV) run --with pip-audit pip-audit --strict -r $(EXPORTED_REQS)
+	@rm -f $(EXPORTED_REQS)
 
 check: lint typecheck test ## Everything CI runs
 
@@ -62,6 +73,28 @@ verify-contract: ## Probe the live instance for the two unresolved behaviours
 docker/build: ## Build the container image, tagged with the git-derived version
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(TAG) -t $(IMAGE):latest .
 
+docker/buildx: ## Build the multi-arch release image (does not push; see docker/push)
+	# --load cannot hold a multi-arch result, so a local multi-arch build has
+	# nowhere to put it but the cache. This target is here to prove the arm64
+	# build compiles; docker/push is what produces a usable artefact.
+	docker buildx build --platform $(PLATFORMS) \
+		--build-arg VERSION=$(VERSION) -t $(IMAGE):$(TAG) .
+
+docker/push: ## Build and push the multi-arch image under the git-derived tag
+	@case "$(VERSION)" in \
+	  *dev*|*+*|0.0.0*) \
+	    echo "Refusing to push $(TAG): not a release version. Tag the commit first."; \
+	    exit 1;; \
+	esac
+	docker buildx build --platform $(PLATFORMS) \
+		--build-arg VERSION=$(VERSION) \
+		-t $(IMAGE):$(TAG) -t $(IMAGE):latest --push .
+
+docker/pins: ## Print the current digests of the base images, to refresh the Dockerfile
+	@for img in $(BASE_IMAGES); do \
+		printf '%s@%s\n' "$$img" "$$(docker buildx imagetools inspect $$img --format '{{.Manifest.Digest}}')"; \
+	done
+
 docker/run: ## Start the stack in the background
 	VERSION=$(VERSION) $(COMPOSE) up -d --build
 
@@ -75,7 +108,7 @@ docker/shell: ## Open a shell in the running container
 	$(COMPOSE) exec discoverygram /bin/sh
 
 clean: ## Remove caches and build artifacts
-	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage dist build
+	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage dist build $(EXPORTED_REQS)
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 
 release: check docker/build ## Verify everything, then build the release image
@@ -84,5 +117,5 @@ release: check docker/build ## Verify everything, then build the release image
 	  *dev*|*+*|0.0.0*) \
 	    echo "WARNING: this is not a release version. Tag the commit first:"; \
 	    echo "         git tag -a vX.Y.Z -m 'X.Y.Z' && make release";; \
-	  *) echo "Push it with: docker push $(IMAGE):$(TAG)";; \
+	  *) echo "Publish it with: make docker/push (multi-arch: $(PLATFORMS))";; \
 	esac

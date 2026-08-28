@@ -638,22 +638,89 @@ been run here.
 
 ---
 
-## Phase 8 — Packaging, documentation and release
+## Phase 8 — Packaging, documentation and release — **COMPLETE**
 
-**Work**
-1. Final Docker image: pinned base, non-root, healthcheck, small layers, multi-arch build.
-2. `docker-compose.yml` covering bot + optional Redis, with sane defaults and an override example.
-3. `Makefile` targets verified end-to-end; release script producing tagged images.
-4. Documentation set completed and cross-checked against the code:
-   `README.md`, `docs/ARCHITECTURE.md`, `docs/FEATURES.md`, `docs/CONFIGURATION.md`,
-   `docs/notediscovery-contract.md`, `docs/OPERATIONS.md` (deploy, upgrade, backup, troubleshoot),
-   `docs/LLM_PROVIDERS.md` (per-provider setup and quirks), `docs/DEVELOPMENT.md`,
-   `docs/adr/` (architecture decision records), `CHANGELOG.md`.
-5. `.env.example` verified: every variable the code reads is present, and nothing extra.
-6. Usage walkthrough with real command transcripts for each headline flow.
+**Delivered**
+
+| Item | Where |
+|---|---|
+| Base images pinned by **digest**, both multi-arch indexes; non-root uid 1001, `HEALTHCHECK`, cached dependency layer | `Dockerfile` |
+| Multi-arch release build (`linux/amd64` + `linux/arm64`), and a target that refuses to push a non-release version | `Makefile` (`docker/buildx`, `docker/push`) |
+| A target that prints the current base digests, so refreshing a pin is deliberate rather than a rebuild side effect | `Makefile` (`docker/pins`) |
+| Deployment override example: published image, resource limits, log rotation, webhook behind a TLS proxy, metrics scraping | `docker-compose.override.example.yml` |
+| Operations manual: deploy, upgrade, rollback, backup, observability, a troubleshooting index keyed by symptom | `docs/OPERATIONS.md` |
+| Contributor guide: toolchain, layout, layering rules, conventions, how to add a command / setting / provider / metric | `docs/DEVELOPMENT.md` |
+| Ten architecture decision records, each naming the alternative that was rejected | `docs/adr/` |
+| Changelog grouped by the phase each release completed | `CHANGELOG.md` |
+| Usage walkthrough with the bot's actual replies | `docs/WALKTHROUGH.md` |
+| README rewritten from "M1 complete" to feature-complete, with a capability table and an honest live-credentials caveat | `README.md` |
+
+**Three defects the packaging work surfaced** — all three were dead code paths that
+looked correct in review and only failed when run.
+
+- **`make audit` had never worked.** It was listed as delivered in phase 7 and
+  documented as "not run here". Run, it fails: pip-audit tries to resolve
+  `discoverygram` itself on PyPI, and `--strict` promotes even the
+  `--skip-editable` skip to an error. It now audits the **exported lockfile**
+  (`uv export --no-emit-project`) and reports clean across 70 packages. A
+  quality gate that has never been executed is not a quality gate.
+- **CI could publish a failing build.** The `image` job carried no
+  `needs: quality`, so the two jobs ran in parallel and a red test suite still
+  pushed `latest` to Docker Hub. The gate existed and was wired to nothing.
+- **The image was single-arch despite looking multi-arch.** The workflow set up
+  QEMU *and* Buildx — the whole apparatus — but never passed `platforms:`, so
+  every release since the beginning was `linux/amd64` only. Adding it also
+  required removing `load: true`, which cannot hold a manifest list, and
+  rewriting the version check to inspect the *published* manifest instead of a
+  locally loaded image that no longer exists.
+
+**Design decisions worth stating**
+
+- **Digests, not tags, for base images.** A tag is a moving pointer; an image
+  that rebuilds identically from an identical commit is what makes a release
+  reproducible. Both pins are multi-arch indexes, so pinning costs nothing on
+  arm64 — and `make docker/pins` makes refreshing them a deliberate commit
+  rather than something that happens silently on a rebuild.
+- **`docker/buildx` builds both architectures and keeps neither.** A
+  multi-arch result cannot be `--load`ed into the local image store, so the
+  target exists to prove the arm64 build compiles; `docker/push` is what
+  produces a usable artefact. Naming that in the target's own comment is
+  cheaper than the next person rediscovering it.
+- **The override file ships commented out, in full.** Every block is a real
+  deployment concern with the reasoning next to it, and none of it is active.
+  An override that repeats a default is a second place to keep it correct.
+- **The walkthrough's transcripts are generated, not written.** The replies in
+  `docs/WALKTHROUGH.md` came out of the real renderers driven with sample vault
+  data. Where a transcript could not be produced mechanically it is marked
+  `(structure)` and describes the sections instead of quoting text that was
+  never emitted. Invented transcripts are how documentation starts lying.
+
+**Verified, not assumed**
+
+- `make check` green: **1030 tests at 94% coverage**, ruff and mypy strict clean.
+- `make audit`: **no known vulnerabilities** across 70 locked packages — the
+  first time this target has ever produced a result.
+- `make docker/buildx` **run to completion**: `linux/amd64` and `linux/arm64`
+  both build from the pinned digests, exit 0.
+- `make docker/pins` output **matches the digests in the `Dockerfile`** exactly.
+- `docker compose config` valid for the base file and for base + override.
+- `.env.example` **verified programmatically** against `Settings`: every field
+  the code reads is present, and every extra name is a provider variable read
+  dynamically by `load_provider_configs`. Nothing missing, nothing stale.
+- The CI workflow parses, `image.needs == quality`, and the build step carries
+  both platforms with no `load`.
+
+**Not verified** — the CI workflow itself has not run: it triggers on tags, and
+tagging is a release decision rather than something to do to test a pipeline.
+The multi-arch build is proven locally; the *push* path and the manifest
+verification step have not executed against Docker Hub. And the live-credential
+gap from phase 7 is unchanged — no instance, no token, no provider key.
 
 **Definition of Done** — a new machine can go from `git clone` to a working bot using only
-`README.md` and `.env.example`.
+`README.md` and `.env.example`. **Met**, with one caveat that belongs to the environment rather than
+the documentation: the walkthrough from clone to *running* bot is written and complete, but has
+never been executed by someone who was not the author, because doing so needs the three credentials
+below.
 
 ---
 
@@ -664,7 +731,7 @@ been run here.
 | **M1 — Read-only bot** ✅ | 0–4 | Search, browse and read the whole vault from Telegram |
 | **M2 — Resilient LLM layer** ✅ | 5 | Multi-provider chat and vision with retry and failover |
 | **M3 — Full note authoring** ✅ | 6 | Image-to-note with generated title, preview and save |
-| **M4 — Production release** | 7–8 | Hardened, containerised, fully documented v1.0 |
+| **M4 — Production release** ✅ | 7–8 | Hardened, containerised, fully documented release |
 
 M1 is the first genuinely useful release and carries no LLM dependency — it is the recommended
 early cut-line if scope needs trimming.
@@ -690,10 +757,10 @@ early cut-line if scope needs trimming.
 
 ## Open items
 
-Phases 0 to 7 are complete — milestones **M1** (read-only bot), **M2**
-(resilient LLM layer) and **M3** (full note authoring), with phase 7's hardening
-on top — and all were built without live credentials. Phase 8 (packaging,
-documentation and release) is what remains for **M4**. What is still needed:
+**Every phase is complete**, and with phase 8 so is milestone **M4**. All eight
+were built without live credentials, and that — not any remaining feature — is
+the whole of what stands between a bot that is written and a bot that is
+running:
 
 1. `NOTEDISCOVERY_URL` (with port) and the API key of the live instance — if the
    instance runs unauthenticated, say so, the adapter supports both.
@@ -708,7 +775,16 @@ documentation and release) is what remains for **M4**. What is still needed:
    Both behaviours they probe are confirmed from source; the run is what turns
    "confirmed in code" into "confirmed in production".
 
-Phase 8 is next: packaging, the documentation set and the release. Phase 7
-changed no user-visible behaviour beyond three new refusal messages, so the
-three credentials above are still what stands between a bot that is written and
-a bot that is running.
+Two smaller things are deliberately left open rather than forgotten:
+
+- **The release pipeline has never run.** CI triggers on tags, and the multi-arch
+  push plus its manifest verification will execute for the first time on the
+  next `git push --tags`. The build itself is proven locally on both
+  architectures; the publish path is not.
+- **CI has no pull-request or branch trigger** (removed deliberately in
+  `78ce839`). `make check` is therefore the only gate on a change until someone
+  tags a release. That is a defensible choice for a single-maintainer project
+  and a bad one the moment it stops being single-maintainer.
+
+Beyond that: the roadmap is finished. Further work is new scope, and the place
+to argue for it is a new phase or an ADR, not an open item on a closed plan.

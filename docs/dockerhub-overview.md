@@ -2,19 +2,21 @@
 
 **A Telegram front-end for [NoteDiscovery](https://github.com/gamosoft/NoteDiscovery): search, browse, read and create notes in your vault from a chat.**
 
-> ### ⚠️ Early access — the bot is not implemented yet
+> ### Feature-complete
 >
-> This image currently ships the **foundations only**: configuration, structured logging, health
-> endpoints and the NoteDiscovery reachability probe. It starts, validates your configuration and
-> answers `/healthz`, but **it does not yet connect to Telegram or serve any command**.
+> Search, navigation, note authoring, image-to-note capture across nine LLM providers, and the
+> hardening around all of it — caching, per-user rate limits, circuit breaking, Prometheus metrics,
+> upload validation. 1030 tests at 94% coverage.
 >
-> Telegram handlers arrive in phase 2, search in phase 3, navigation in phase 4. Pull this image now
-> if you want to prepare configuration or follow development — not if you expect a working bot today.
-> Progress is tracked in [ROADMAP.md](https://github.com/lordraw77/DiscoveryGram/blob/main/docs/ROADMAP.md).
+> One honest caveat: the project was built and tested **without live credentials**. Fault scenarios
+> are injected at the adapter seams rather than by unplugging a real vault. Your first run is the
+> first run against a real NoteDiscovery — `make check-env` validates your configuration before you
+> start, and `make verify-contract` probes your instance for the two behaviours that shape editing
+> and search.
 
 ---
 
-## What it will do
+## What it does
 
 | Capability | Detail |
 |---|---|
@@ -28,11 +30,16 @@
 
 | Tag | Contents |
 |---|---|
-| `latest` | Latest build from `main` |
-| `0.1.0` | Phase 0 — foundations, no Telegram bot yet |
+| `latest` | The most recent release |
+| `X.Y.Z` | That release, immutably. Pin this in anything unattended |
 
-Base image: `python:3.12-slim-bookworm`. Runs as a non-root user (uid 1001) with a built-in
-`HEALTHCHECK`.
+**Architectures:** `linux/amd64` and `linux/arm64` — the same tag serves both, so a Raspberry Pi
+pulls the right one with no extra flags.
+
+Base image: `python:3.12-slim-bookworm`, **pinned by digest** so a given tag rebuilds identically.
+Runs as a non-root user (uid 1001) with a built-in `HEALTHCHECK`. The image carries no build
+toolchain: dependencies are installed in a separate stage and only the virtual environment is
+copied forward.
 
 ## Quick start
 
@@ -52,7 +59,7 @@ docker run -d --name discoverygram \
 Check it came up:
 
 ```bash
-curl localhost:8080/healthz   # {"status": "ok", "version": "0.1.0"}
+curl localhost:8080/healthz   # {"status": "ok", "version": "2.0.0"}
 curl localhost:8080/readyz    # 200 when NoteDiscovery is reachable, 503 otherwise
 ```
 
@@ -106,7 +113,9 @@ The full reference, including the nine LLM providers, is in
 ## LLM providers
 
 Supported: **NVIDIA, OpenRouter, Groq, Gemini, Cloudflare Workers AI, Cerebras, Mistral, Puter and
-Ollama.** None is required until the LLM features land in phase 5.
+Ollama.** **None is required.** Search, browsing, reading and manual note creation work with no
+provider configured at all; only generation needs one — and when every provider is down, the bot
+says so and keeps serving everything else.
 
 Failover works on **(provider, model) pairs**, not on providers alone:
 
@@ -146,10 +155,12 @@ keeps things working offline and keeps note content on your own hardware.
 ## Documentation
 
 - [Source and README](https://github.com/lordraw77/DiscoveryGram)
-- [Roadmap](https://github.com/lordraw77/DiscoveryGram/blob/main/docs/ROADMAP.md)
-- [Architecture](https://github.com/lordraw77/DiscoveryGram/blob/main/docs/ARCHITECTURE.md)
+- [Walkthrough](https://github.com/lordraw77/DiscoveryGram/blob/main/docs/WALKTHROUGH.md) — every flow, with the bot's actual replies
 - [Features](https://github.com/lordraw77/DiscoveryGram/blob/main/docs/FEATURES.md)
 - [Configuration reference](https://github.com/lordraw77/DiscoveryGram/blob/main/docs/CONFIGURATION.md)
+- [Operations](https://github.com/lordraw77/DiscoveryGram/blob/main/docs/OPERATIONS.md) — deploy, upgrade, back up, troubleshoot
+- [Architecture](https://github.com/lordraw77/DiscoveryGram/blob/main/docs/ARCHITECTURE.md) and [decision records](https://github.com/lordraw77/DiscoveryGram/blob/main/docs/adr/README.md)
+- [Changelog](https://github.com/lordraw77/DiscoveryGram/blob/main/CHANGELOG.md)
 - [NoteDiscovery contract](https://github.com/lordraw77/DiscoveryGram/blob/main/docs/notediscovery-contract.md)
 
 ## License

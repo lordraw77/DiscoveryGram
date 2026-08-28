@@ -44,6 +44,10 @@ jobs:
   image:
     name: Build and Push container image
     runs-on: ubuntu-latest
+    # Without this the two jobs run in parallel and a failing test still
+    # publishes `latest`. The quality gate has to be upstream of the push to be
+    # a gate at all.
+    needs: quality
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,7 +62,7 @@ jobs:
         id: version
         run: echo "value=$(uv run python scripts/version.py)" >> "$GITHUB_OUTPUT"
 
-      - name: Docker Meta (Genera i tag per Docker Hub)
+      - name: Derive the Docker Hub tags
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -84,16 +88,34 @@ jobs:
         with:
           context: .
           push: true
-          load: true
+          # `load: true` is incompatible with a multi-platform build: the local
+          # docker image store cannot hold a manifest list. The verification
+          # step below pulls the pushed image per architecture instead.
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             VERSION=${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Verify the image reports that version
+      - name: Verify the published manifest is multi-arch
         run: |
-          reported=$(docker run --rm --entrypoint python lordraw/discoverygram:${{ steps.version.outputs.value }} \
+          docker buildx imagetools inspect \
+            lordraw/discoverygram:${{ steps.version.outputs.value }}
+          for arch in amd64 arm64; do
+            docker buildx imagetools inspect \
+              lordraw/discoverygram:${{ steps.version.outputs.value }} \
+              --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}' \
+              | grep -q "linux/$arch"
+            echo "manifest carries linux/$arch"
+          done
+
+      - name: Verify the image reports that version
+        # amd64 only: this runner cannot execute the arm64 image without QEMU
+        # binfmt, and the version is baked in identically for both.
+        run: |
+          reported=$(docker run --rm --platform linux/amd64 \
+            --entrypoint python lordraw/discoverygram:${{ steps.version.outputs.value }} \
             -c "import discoverygram; print(discoverygram.__version__)")
           echo "image reports $reported, expected ${{ steps.version.outputs.value }}"
           test "$reported" = "${{ steps.version.outputs.value }}"

@@ -1,0 +1,92 @@
+# DiscoveryGram — deployment override example.
+#
+# Copy to `docker-compose.override.yml` and edit. Compose merges it over
+# `docker-compose.yml` automatically, with no `-f` flag, so the base file stays
+# the thing you pull from git and this stays the thing your deployment changes.
+#
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#
+# Every block below is commented out. Uncomment only what you actually need —
+# an override that repeats a default is a second place to keep it correct.
+
+services:
+  discoverygram:
+    # --- Run a published image instead of building from source ---------------
+    # The base file builds from the working tree, which is what you want while
+    # developing and not what you want on a server. Pin a version rather than
+    # `latest`: an unattended `docker compose pull` should never be able to
+    # change which code is running.
+    #
+    # image: lordraw/discoverygram:2.0.0
+    # build: !reset null
+
+    # --- Resource limits -----------------------------------------------------
+    # The bot is I/O-bound and small. These are enough headroom for the album
+    # buffer and a few concurrent vision calls; lower them and a multi-photo
+    # capture is what will find the limit first.
+    #
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 512M
+    #     reservations:
+    #       memory: 128M
+
+    # --- Logging -------------------------------------------------------------
+    # LOG_FORMAT=json (the default) is meant to be collected. Cap the local
+    # files so an unattended host cannot fill its disk with them.
+    #
+    # logging:
+    #   driver: json-file
+    #   options:
+    #     max-size: "10m"
+    #     max-file: "3"
+
+    # --- Webhook mode --------------------------------------------------------
+    # Telegram only posts to HTTPS, so webhook mode needs a TLS-terminating
+    # proxy in front. Publish the webhook port to the proxy only — binding it
+    # to 127.0.0.1 keeps it off the host's public interfaces.
+    #
+    # ports:
+    #   - "127.0.0.1:8080:8080"
+    #   - "127.0.0.1:8081:8081"
+    #
+    # Set in .env, not here, so the secret stays out of git:
+    #   TELEGRAM_MODE=webhook
+    #   TELEGRAM_WEBHOOK_URL=https://bot.example.com/telegram
+    #   TELEGRAM_WEBHOOK_SECRET=<a long random string>
+
+    # --- Reaching NoteDiscovery ----------------------------------------------
+    # The base file maps host.docker.internal for an instance on the host. If
+    # NoteDiscovery is a container on a network you already have, join it and
+    # set NOTEDISCOVERY_URL to the service name in .env instead.
+    #
+    # networks:
+    #   - default
+    #   - notediscovery
+
+    # --- Metrics -------------------------------------------------------------
+    # /metrics is served on HEALTH_PORT and is not authenticated. Expose it to
+    # a scrape network, never to the internet. Enable with METRICS_ENABLED=true
+    # in .env.
+    #
+    # labels:
+    #   prometheus.io/scrape: "true"
+    #   prometheus.io/port: "8080"
+    #   prometheus.io/path: "/metrics"
+
+  # --- Redis session backend -------------------------------------------------
+  # Only needed with SESSION_BACKEND=redis, and only started under its profile:
+  #   docker compose --profile redis up -d
+  #
+  # The base file runs it with a snapshot every 60s and no AOF. Sessions are
+  # short-lived callback state — losing them costs an open note's buttons, not
+  # a note — so durability here is deliberately cheap. Uncomment for stronger
+  # persistence:
+  #
+  # redis:
+  #   command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+
+# networks:
+#   notediscovery:
+#     external: true

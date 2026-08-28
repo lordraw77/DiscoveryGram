@@ -1,7 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
 # --- Builder ----------------------------------------------------------------
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+# Base images are pinned by digest, not by tag: a tag is a moving pointer, and
+# an image that rebuilds identically from an identical commit is the whole
+# point of a release build. Both digests are multi-arch indexes, so the pin
+# costs nothing on arm64. Refresh them with `make docker/pins`.
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58 AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -35,7 +39,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev
 
 # --- Runtime ----------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.12-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS runtime
 
 ARG VERSION=0.0.0+unknown
 LABEL org.opencontainers.image.title="DiscoveryGram" \

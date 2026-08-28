@@ -4,10 +4,23 @@ Make a [NoteDiscovery](https://github.com/gamosoft/NoteDiscovery) vault fully us
 **Telegram**: search it, navigate it, read it, and create notes in it — including LLM-assisted
 creation from images.
 
-> **Status: milestone M1 complete** (phases 0–4). The bot searches, browses and reads the whole
-> vault: `/search` `/find` `/tag` `/recent` `/browse` `/open` `/backlinks` `/related`, plus a
-> per-note action bar that edits, appends, tags, shares and deletes. LLM-assisted note creation
-> lands in phases 5–6. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status: feature-complete.** All eight phases are delivered — search, navigation, the
+> multi-provider LLM router, image-to-note authoring, and the phase 7 hardening on top. `make check`
+> is green: ruff clean, mypy strict clean, **1030 tests at 94% coverage**. What has *not* happened is
+> a run against live credentials — see [Verifying against a live instance](#verifying-against-a-live-instance).
+> See [docs/ROADMAP.md](docs/ROADMAP.md) and [CHANGELOG.md](CHANGELOG.md).
+
+## What it does
+
+| | |
+|---|---|
+| **Find** | `/search` full text · `/find` literal · `/tag` · `/recent` — ranked client-side, with pagination that costs no vault read |
+| **Read** | `/browse` the folder tree · `/open` · `/backlinks` · `/related` — wiki-links become buttons, long notes are paged or split |
+| **Write** | `/new` · `/quick` capture · `/template` · `/move` · `/folder`, plus a per-note action bar |
+| **Capture** | Send a photo — the bot reads it, writes it up and shows a **draft**. Nothing is saved until you tap *Save* |
+| **Ask** | `/summarize` a note · `/ask` a question answered from your notes, with its sources named |
+
+A guided tour with the bot's actual replies is in [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md).
 
 ## Quick start
 
@@ -49,11 +62,25 @@ identifiable. Details in [docs/CONFIGURATION.md](docs/CONFIGURATION.md#versionin
 Published as [`lordraw/discoverygram`](https://hub.docker.com/r/lordraw/discoverygram).
 
 ```bash
-make docker/build
+make docker/build    # single-arch, for this machine
 make docker/run      # docker compose up -d --build
 make docker/logs
 make docker/stop
 ```
+
+Release images are **multi-arch** (`linux/amd64` + `linux/arm64`) and build from base images pinned
+by digest:
+
+```bash
+make docker/buildx   # build both architectures (cache only — proves they compile)
+make docker/push     # build and push; refuses a version that is not a release
+make docker/pins     # current base digests, for refreshing the Dockerfile
+```
+
+To run a published image instead of building from source, copy
+`docker-compose.override.example.yml` to `docker-compose.override.yml` — Compose merges it
+automatically, with no `-f` flag. It also covers resource limits, log rotation, webhook mode behind
+a TLS proxy, and metrics scraping.
 
 Redis is only needed when `SESSION_BACKEND=redis`:
 
@@ -66,38 +93,51 @@ backend and the Telegram updater; a degraded AI ladder is reported but does not 
 `/metrics` (Prometheus, when `METRICS_ENABLED=true`) on `HEALTH_PORT`, and carries a Docker
 `HEALTHCHECK`.
 
-## Verifying the NoteDiscovery contract
+## Verifying against a live instance
 
-Two NoteDiscovery behaviours could not be settled from source and shape the edit and search flows.
-Once `.env` points at a live instance:
+The bot was built and tested without live credentials: every fault scenario is injected at the
+adapter seams, and the `/metrics` endpoint has been scraped by a test client rather than by a real
+Prometheus. Three things turn "confirmed in code" into "confirmed in production":
 
 ```bash
-make verify-contract
+make check-env       # validate .env and print the LLM ladder the current keys produce — no network
+make verify-contract # probe the live instance for the two behaviours that shape edit and search
+make test-live       # the opt-in suite against a real NoteDiscovery
 ```
 
-It probes `POST` overwrite semantics using a single scratch note (which it deletes) and reads the
-search configuration, then tells you what to record in the contract document.
+`make verify-contract` probes `POST` overwrite semantics using a single scratch note (which it
+deletes) and reads the search configuration, then tells you what to record in the contract document.
+
+`ollama` needs no API key and is the cheapest way to see image-to-note work end to end.
 
 ## Documentation
 
 | Document | Purpose |
 |---|---|
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Delivery plan: phases, milestones, risks |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, layering, key decisions |
+| [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) | Every flow end to end, with the bot's actual replies |
 | [docs/FEATURES.md](docs/FEATURES.md) | Functional catalogue: commands and flows |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Full `.env` reference |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Deploy, upgrade, back up, observe, troubleshoot |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Toolchain, layout, conventions, how to add things |
+| [docs/LLM_PROVIDERS.md](docs/LLM_PROVIDERS.md) | Per-provider setup, dialect quirks, chain design |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, layering, key decisions |
+| [docs/adr/](docs/adr/README.md) | Architecture decision records — the *why*, and what was rejected |
 | [docs/notediscovery-contract.md](docs/notediscovery-contract.md) | Verified REST + MCP contract |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Delivery plan: phases, milestones, risks |
+| [CHANGELOG.md](CHANGELOG.md) | What changed, per release |
 
 ## Development
 
 ```bash
 make help            # list every target
 make format          # auto-fix formatting and lint
-make test            # unit tests (live tests excluded)
+make check           # lint, type-check, test — exactly what CI runs
 make test-live       # opt-in tests against a real instance
+make audit           # locked dependencies against the advisory database
 ```
 
 All code and documentation are English-only. All configuration comes from the environment.
+Full guide: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## License
 
